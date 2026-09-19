@@ -53,40 +53,8 @@ impl UserData for StatsHandle {
 mod tests {
     use std::sync::Arc;
 
+    use super::super::test_support::FakeStats;
     use super::StatsHandle;
-    use wrkrs_engine::StatsView;
-
-    struct FakeStats;
-
-    impl StatsView for FakeStats {
-        fn min(&self) -> u64 {
-            100
-        }
-
-        fn max(&self) -> u64 {
-            900
-        }
-
-        fn mean(&self) -> f64 {
-            250.5
-        }
-
-        fn stdev(&self) -> f64 {
-            12.25
-        }
-
-        fn percentile(&self, percentile: f64) -> u64 {
-            (percentile as u64) + 1
-        }
-
-        fn popcount(&self) -> u64 {
-            7
-        }
-
-        fn value_at(&self, slot: u64) -> (u64, u64) {
-            (100 + slot, 10 * slot)
-        }
-    }
 
     fn stats_global(lua: &mlua::Lua) {
         let userdata = lua

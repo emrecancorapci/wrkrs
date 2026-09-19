@@ -106,52 +106,13 @@ fn assign_thread(api: &Arc<dyn ThreadApi>, key: &str, value: LuaValue) -> Result
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
+    use std::sync::Arc;
 
+    use super::super::test_support::FakeThread;
     use super::{Address, ThreadHandle};
-    use wrkrs_engine::{EngineError, ThreadApi, Value};
+    use wrkrs_engine::{ThreadApi, Value};
 
-    #[derive(Default)]
-    struct FakeThread {
-        addr: Mutex<Option<std::net::SocketAddr>>,
-        stopped: Mutex<bool>,
-        globals: Mutex<HashMap<String, Value>>,
-    }
-
-    impl ThreadApi for FakeThread {
-        fn addr(&self) -> Option<std::net::SocketAddr> {
-            *self.addr.lock().unwrap_or_else(|p| p.into_inner())
-        }
-
-        fn set_addr(&self, addr: std::net::SocketAddr) {
-            *self.addr.lock().unwrap_or_else(|p| p.into_inner()) = Some(addr);
-        }
-
-        fn stop(&self) {
-            *self.stopped.lock().unwrap_or_else(|p| p.into_inner()) = true;
-        }
-
-        fn get_global(&self, name: &str) -> Result<Value, EngineError> {
-            Ok(self
-                .globals
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get(name)
-                .cloned()
-                .unwrap_or(Value::Null))
-        }
-
-        fn set_global(&self, name: &str, value: &Value) -> Result<(), EngineError> {
-            self.globals
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert(name.to_owned(), value.clone());
-            Ok(())
-        }
-    }
-
-    fn thread_global(lua: &mlua::Lua, api: std::sync::Arc<FakeThread>) {
+    fn thread_global(lua: &mlua::Lua, api: Arc<FakeThread>) {
         let userdata = lua.create_userdata(ThreadHandle(api)).unwrap();
         lua.globals().set("thread", userdata).unwrap();
     }
@@ -207,7 +168,7 @@ mod tests {
         let api = std::sync::Arc::new(FakeThread::default());
         thread_global(&lua, api.clone());
         lua.load("thread:stop()").exec().unwrap();
-        assert!(*api.stopped.lock().unwrap_or_else(|p| p.into_inner()));
+        assert!(api.stopped());
     }
 
     #[test]
