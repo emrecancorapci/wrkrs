@@ -44,6 +44,26 @@ pub struct Scripts {
 pub fn run(name: &str, make: MakeEngine, scripts: &Scripts) {
     default_request(name, make);
     post(name, make, scripts.post);
+    pipeline(name, make, scripts.pipeline);
+}
+
+/// A pipelined request is the exact concatenation of the formatted
+/// parts.
+fn pipeline(name: &str, make: MakeEngine, script: &str) {
+    let mut engine = engine_for(name, make, "pipeline", Some(script));
+    engine
+        .init(Arc::new(FakeThread::default()), &[])
+        .unwrap_or_else(|error| panic!("{name}: init failed: {error}"));
+    let request = engine
+        .request()
+        .unwrap_or_else(|error| panic!("{name}: request failed: {error}"));
+    let host = host_header("example.test", Some("8080"));
+    let expected = [
+        format_request("GET", "/?foo", &[], None, Some(&host)),
+        format_request("GET", "/?bar", &[], None, Some(&host)),
+    ]
+    .concat();
+    assert_eq!(request, expected, "{name}: pipelined request mismatch");
 }
 
 /// A script that changes the method, headers, and body produces the
