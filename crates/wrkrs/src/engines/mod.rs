@@ -84,19 +84,19 @@ pub fn engines() -> &'static [EngineEntry] {
             description: "Lua 5.4 (vendored)",
             factory: lua::factory,
         },
-        #[cfg(feature = "engine-stub")]
-        EngineEntry {
-            name: "stub",
-            extensions: &["stub"],
-            description: "Minimal engine used by tests",
-            factory: stub::factory,
-        },
         #[cfg(feature = "engine-quickjs")]
         EngineEntry {
             name: "quickjs",
             extensions: &["js"],
             description: "QuickJS (rquickjs)",
             factory: quickjs::factory,
+        },
+        #[cfg(feature = "engine-stub")]
+        EngineEntry {
+            name: "stub",
+            extensions: &["stub"],
+            description: "Minimal engine used by tests",
+            factory: stub::factory,
         },
     ]
 }
