@@ -8,7 +8,7 @@ use crate::value::Value;
 ///
 /// Backs the `wrk.lookup()` and `wrk.connect()` script functions with the
 /// same semantics as wrk's C implementation.
-pub trait ResolveApi {
+pub trait ResolveApi: Send + Sync {
     /// Resolves a host and service pair to addresses.
     ///
     /// Matches POSIX `getaddrinfo` with `AF_UNSPEC` and `SOCK_STREAM`.
@@ -44,7 +44,7 @@ pub trait ThreadApi: Send + Sync {
 ///
 /// The host records latency and request rate statistics and scripts read
 /// them through the stats objects passed to `done()`.
-pub trait StatsView {
+pub trait StatsView: Send + Sync {
     /// The smallest recorded value.
     fn min(&self) -> u64;
     /// The largest recorded value.
