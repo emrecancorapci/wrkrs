@@ -74,9 +74,7 @@ fn ctx_error(ctx: &rquickjs::Ctx<'_>, error: rquickjs::Error) -> EngineError {
 }
 
 /// Reads the message of the pending JavaScript exception.
-// The error mapping uses this, the allow comes off with that commit.
-#[allow(dead_code)]
-fn exception_message(ctx: &rquickjs::Ctx<'_>) -> String {
+pub(crate) fn exception_message(ctx: &rquickjs::Ctx<'_>) -> String {
     let exception = ctx.catch();
     if let Some(object) = exception.into_object()
         && let Some(error) = rquickjs::Exception::from_object(object)
@@ -185,6 +183,8 @@ fn format_request_js<'js>(
 // Unused until the callbacks land, the allow comes off with them.
 #[allow(dead_code)]
 mod address;
+#[allow(dead_code)]
+mod thread;
 #[allow(dead_code)]
 mod value;
 
