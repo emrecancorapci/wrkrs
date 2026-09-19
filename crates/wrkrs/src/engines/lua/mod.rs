@@ -14,6 +14,8 @@ type ResolverSlot = Arc<Mutex<Option<Arc<dyn ResolveApi>>>>;
 // Unused by the library until the userdata and callback commits land,
 // the allow comes off with them.
 #[allow(dead_code)]
+mod thread;
+#[allow(dead_code)]
 mod value;
 
 /// One Lua scripting environment driven by the host.
@@ -47,6 +49,7 @@ pub(crate) fn vm_message(error: &mlua::Error) -> String {
     match error {
         mlua::Error::SyntaxError { message, .. } => message.clone(),
         mlua::Error::RuntimeError(message) => message.clone(),
+        mlua::Error::CallbackError { cause, .. } => vm_message(cause),
         other => other.to_string(),
     }
 }

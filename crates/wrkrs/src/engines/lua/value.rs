@@ -70,7 +70,7 @@ pub fn lua_to_value(value: LuaValue) -> Result<Value, EngineError> {
 }
 
 /// The Lua type name for a value, as luaL_typename reports it.
-fn lua_type_name(value: &LuaValue) -> &'static str {
+pub(super) fn lua_type_name(value: &LuaValue) -> &'static str {
     match value {
         LuaValue::Nil => "nil",
         LuaValue::Boolean(_) => "boolean",
