@@ -14,6 +14,8 @@ type ResolverSlot = Arc<Mutex<Option<Arc<dyn ResolveApi>>>>;
 // Unused by the library until the userdata and callback commits land,
 // the allow comes off with them.
 #[allow(dead_code)]
+mod stats;
+#[allow(dead_code)]
 mod thread;
 #[allow(dead_code)]
 mod value;
