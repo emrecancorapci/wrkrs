@@ -11,6 +11,7 @@ compile_error!(
 #[cfg(not(any(
     feature = "engine-luajit",
     feature = "engine-lua54",
-    feature = "engine-quickjs"
+    feature = "engine-quickjs",
+    feature = "engine-stub"
 )))]
 compile_error!("no scripting engine compiled in: enable an engine-* feature");

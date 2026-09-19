@@ -12,6 +12,7 @@ default = ["engine-luajit", "engine-quickjs"]
 engine-luajit = []
 engine-lua54 = []
 engine-quickjs = []
+engine-stub = []
 
 [dependencies]
 wrkrs-engine.workspace = true
