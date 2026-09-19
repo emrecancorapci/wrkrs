@@ -1,0 +1,20 @@
+[package]
+name = "wrkrs"
+description = "Modern HTTP benchmarking tool, a Rust port of wrk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["engine-luajit", "engine-quickjs"]
+engine-luajit = []
+engine-lua54 = []
+engine-quickjs = []
+
+[dependencies]
+wrkrs-engine.workspace = true
+
+[lints]
+workspace = true

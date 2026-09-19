@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/wrkrs",
+    "crates/wrkrs-engine",
+    "crates/wrkrs-engine-tests",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96.0"
+license = "Apache-2.0"
+repository = "https://github.com/emrecancorapci/wrk-rs"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[workspace.dependencies]
+wrkrs-engine = { version = "0.1.0", path = "crates/wrkrs-engine" }

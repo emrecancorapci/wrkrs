@@ -1,0 +1,14 @@
+[package]
+name = "wrkrs-engine-tests"
+description = "Engine-agnostic conformance suite for wrkrs scripting engines"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wrkrs-engine.workspace = true
+
+[lints]
+workspace = true

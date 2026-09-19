@@ -1,0 +1,11 @@
+[package]
+name = "wrkrs-engine"
+description = "Scripting engine contract for wrkrs, the Rust port of wrk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
