@@ -81,6 +81,11 @@ pub fn instance<'js>(
     Class::<StatsObject>::instance(ctx, StatsObject { view })
 }
 
+/// Registers the stats class on a context.
+pub fn define(ctx: &rquickjs::Ctx<'_>) -> Result<(), rquickjs::Error> {
+    Class::<StatsObject>::define(&ctx.globals())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

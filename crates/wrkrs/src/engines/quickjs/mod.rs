@@ -4,10 +4,14 @@
 //! the callbacks follow the Lua engine semantics, with the differences
 //! documented in ENGINES.md.
 
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use rquickjs::{Context, IntoJs, Runtime};
-use wrkrs_engine::{EngineError, ResolveApi, ScriptSpec};
+use wrkrs_engine::{
+    Capabilities, EngineError, ResolveApi, ScriptEngine, ScriptSpec, StatsView, Summary, ThreadApi,
+    Value,
+};
 
 use self::address::AddressObject;
 
@@ -16,30 +20,27 @@ type ResolverSlot = Arc<Mutex<Option<Arc<dyn ResolveApi>>>>;
 
 /// One QuickJS scripting environment driven by the host.
 pub struct QuickJSEngine {
-    #[allow(dead_code)]
-    runtime: Runtime,
-    // The callbacks read this, the allow comes off with that commit.
-    #[allow(dead_code)]
     context: Context,
-    // The callbacks read this, the allow comes off with that commit.
-    #[allow(dead_code)]
     resolver: ResolverSlot,
 }
 
 impl QuickJSEngine {
     /// Builds one environment from a spec.
     pub fn new(spec: &ScriptSpec) -> Result<Self, EngineError> {
-        let runtime = Runtime::new().map_err(|error| EngineError::Runtime(error.to_string()))?;
-        let context =
-            Context::full(&runtime).map_err(|error| EngineError::Runtime(error.to_string()))?;
+        // The context keeps the runtime alive on its own.
+        let context = Runtime::new()
+            .map_err(|error| EngineError::Runtime(error.to_string()))
+            .and_then(|runtime| {
+                Context::full(&runtime).map_err(|error| EngineError::Runtime(error.to_string()))
+            })?;
         let engine = QuickJSEngine {
-            runtime,
             context,
             resolver: Arc::new(Mutex::new(None)),
         };
         engine.with(|ctx| install_wrk(ctx, spec))?;
         engine.with(|ctx| {
             thread::define(ctx)?;
+            stats::define(ctx)?;
             install_lookup(ctx, &engine.resolver)
         })?;
         engine.run_script_file(spec.script.as_deref());
@@ -67,8 +68,6 @@ impl QuickJSEngine {
     }
 
     /// Runs a closure inside the context with engine error mapping.
-    // The callbacks use this, the allow comes off with that commit.
-    #[allow(dead_code)]
     fn with<F, R>(&self, function: F) -> Result<R, EngineError>
     where
         F: FnOnce(&rquickjs::Ctx<'_>) -> Result<R, rquickjs::Error>,
@@ -80,8 +79,6 @@ impl QuickJSEngine {
 
 /// Maps an in-context error, carrying the exception message when the
 /// VM raised one.
-// The callbacks use this, the allow comes off with that commit.
-#[allow(dead_code)]
 fn ctx_error(ctx: &rquickjs::Ctx<'_>, error: rquickjs::Error) -> EngineError {
     let message = if matches!(error, rquickjs::Error::Exception) {
         exception_message(ctx)
@@ -198,14 +195,9 @@ fn format_request_js<'js>(
     })
 }
 
-// Unused until the callbacks land, the allow comes off with them.
-#[allow(dead_code)]
 mod address;
-#[allow(dead_code)]
 mod stats;
-#[allow(dead_code)]
 mod thread;
-#[allow(dead_code)]
 mod value;
 
 /// Presents an absent part as null, matching the Lua nil.
@@ -325,10 +317,247 @@ fn shared_resolver(
         })
 }
 
+/// Registry factory that builds a [`QuickJSEngine`].
+pub fn factory(spec: &ScriptSpec) -> Result<Box<dyn ScriptEngine>, EngineError> {
+    Ok(Box::new(QuickJSEngine::new(spec)?))
+}
+
+impl ScriptEngine for QuickJSEngine {
+    fn create(spec: &ScriptSpec) -> Result<Self, EngineError>
+    where
+        Self: Sized,
+    {
+        QuickJSEngine::new(spec)
+    }
+
+    fn resolve(
+        &mut self,
+        host: &str,
+        service: &str,
+        resolver: Arc<dyn ResolveApi>,
+    ) -> Result<Vec<SocketAddr>, EngineError> {
+        *self
+            .resolver
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(resolver);
+        self.with(|ctx| {
+            let wrk: rquickjs::Object = ctx.globals().get("wrk")?;
+            let lookup: rquickjs::Function = wrk.get("lookup")?;
+            let connect: rquickjs::Function = wrk.get("connect")?;
+            let candidates: rquickjs::Array = lookup.call((host.to_owned(), service.to_owned()))?;
+
+            // The wrk.resolve step: keep the addresses that accept a
+            // connection probe, in resolver order.
+            let mut reachable = Vec::new();
+            let filtered = rquickjs::Array::new(ctx.clone())?;
+            for entry in candidates.iter::<rquickjs::Class<'_, AddressObject>>() {
+                let candidate = entry?;
+                let address = candidate.clone().try_borrow()?.address;
+                if connect.call::<_, bool>((candidate.clone(),))? {
+                    filtered.set(reachable.len(), candidate)?;
+                    reachable.push(address);
+                }
+            }
+            wrk.set("addrs", filtered)?;
+            Ok(reachable)
+        })
+    }
+
+    fn setup(&mut self, thread: Arc<dyn ThreadApi>) -> Result<(), EngineError> {
+        self.with(|ctx| {
+            let instance = thread::instance(ctx.clone(), thread.clone())?;
+            // The wrk.setup step: point the thread at the first address.
+            let wrk: rquickjs::Object = ctx.globals().get("wrk")?;
+            if let Ok(addrs) = wrk.get::<_, rquickjs::Array>("addrs")
+                && let Ok(first) = addrs.get::<rquickjs::Class<'_, AddressObject>>(0)
+            {
+                let address = first.try_borrow()?;
+                thread.set_addr(address.address);
+            }
+            let setup: Option<rquickjs::Function> = ctx.globals().get("setup")?;
+            if let Some(setup) = setup {
+                setup.call::<_, ()>((instance,))?;
+            }
+            Ok(())
+        })
+    }
+
+    fn init(&mut self, thread: Arc<dyn ThreadApi>, args: &[String]) -> Result<(), EngineError> {
+        self.with(|ctx| {
+            let instance = thread::instance(ctx.clone(), thread)?;
+            let wrk: rquickjs::Object = ctx.globals().get("wrk")?;
+            wrk.set("thread", instance)?;
+
+            // The wrk.init step: a missing Host header comes from the
+            // host and port parts.
+            let headers: rquickjs::Object = wrk.get("headers")?;
+            let has_host = headers.get::<_, Option<String>>("Host")?.is_some();
+            if !has_host {
+                let host: Option<String> = wrk.get("host")?;
+                let port: Option<String> = wrk.get("port")?;
+                if let Some(host) = host {
+                    headers.set("Host", wrkrs_engine::host_header(&host, port.as_deref()))?;
+                }
+            }
+
+            let arguments = rquickjs::Array::new(ctx.clone())?;
+            for (index, arg) in args.iter().enumerate() {
+                arguments.set(index, arg.clone())?;
+            }
+            let init: Option<rquickjs::Function> = ctx.globals().get("init")?;
+            if let Some(init) = init {
+                init.call::<_, ()>((arguments,))?;
+            }
+            Ok(())
+        })
+    }
+
+    fn delay(&mut self) -> u64 {
+        let result = self.with(|ctx| {
+            let delay: Option<rquickjs::Function> = ctx.globals().get("delay")?;
+            match delay {
+                Some(delay) => delay.call::<_, f64>(()),
+                None => Ok(0.0),
+            }
+        });
+        match result {
+            Ok(delay) => delay as u64,
+            Err(error) => {
+                // wrk calls delay unprotected, a script error aborts the
+                // whole run.
+                eprintln!("{}", error.raw_message());
+                std::process::exit(1);
+            }
+        }
+    }
+
+    fn request(&mut self) -> Result<Vec<u8>, EngineError> {
+        self.with(|ctx| {
+            let request: Option<rquickjs::Function> = ctx.globals().get("request")?;
+            match request {
+                Some(request) => {
+                    let value: rquickjs::Value = request.call(())?;
+                    match request_bytes(&value) {
+                        Some(bytes) => Ok(bytes),
+                        None => Err(rquickjs::Exception::throw_message(
+                            ctx,
+                            "request must return a string or a number",
+                        )),
+                    }
+                }
+                None => {
+                    let wrk: rquickjs::Object = ctx.globals().get("wrk")?;
+                    let format: rquickjs::Function = wrk.get("format")?;
+                    let request: String = format.call(())?;
+                    Ok(request.into_bytes())
+                }
+            }
+        })
+    }
+
+    fn response(
+        &mut self,
+        status: u16,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<(), EngineError> {
+        self.with(|ctx| {
+            let object = rquickjs::Object::new(ctx.clone())?;
+            for (name, value) in headers {
+                object.set(name.as_str(), value.as_str())?;
+            }
+            let body = String::from_utf8_lossy(body).to_string();
+            let response: rquickjs::Function = ctx.globals().get("response")?;
+            response.call::<_, ()>((status, object, body))
+        })
+    }
+
+    fn done(
+        &mut self,
+        summary: &Summary,
+        latency: Arc<dyn StatsView>,
+        requests: Arc<dyn StatsView>,
+    ) -> Result<(), EngineError> {
+        self.with(|ctx| {
+            let errors = rquickjs::Object::new(ctx.clone())?;
+            errors.set("connect", summary.errors.connect)?;
+            errors.set("read", summary.errors.read)?;
+            errors.set("write", summary.errors.write)?;
+            errors.set("status", summary.errors.status)?;
+            errors.set("timeout", summary.errors.timeout)?;
+
+            let summary_object = rquickjs::Object::new(ctx.clone())?;
+            summary_object.set("duration", summary.duration)?;
+            summary_object.set("requests", summary.requests)?;
+            summary_object.set("bytes", summary.bytes)?;
+            summary_object.set("errors", errors)?;
+
+            let latency = stats::instance(ctx.clone(), latency)?;
+            let requests = stats::instance(ctx.clone(), requests)?;
+            let done: rquickjs::Function = ctx.globals().get("done")?;
+            done.call::<_, ()>((summary_object, latency, requests))
+        })
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        let Ok((request, response, delay, done)) = self.with(|ctx| {
+            Ok((
+                ctx.globals()
+                    .get::<_, rquickjs::Function>("request")
+                    .is_ok(),
+                ctx.globals()
+                    .get::<_, rquickjs::Function>("response")
+                    .is_ok(),
+                ctx.globals().get::<_, rquickjs::Function>("delay").is_ok(),
+                ctx.globals().get::<_, rquickjs::Function>("done").is_ok(),
+            ))
+        }) else {
+            return Capabilities::default();
+        };
+        Capabilities {
+            is_static: !request,
+            wants_response: response,
+            has_delay: delay,
+            has_done: done,
+        }
+    }
+
+    fn get_global(&self, name: &str) -> Result<Value, EngineError> {
+        self.with(
+            |ctx| -> Result<Result<Value, EngineError>, rquickjs::Error> {
+                let value: rquickjs::Value = ctx.globals().get(name)?;
+                Ok(value::js_to_value(&value))
+            },
+        )?
+    }
+
+    fn set_global(&mut self, name: &str, value: &Value) -> Result<(), EngineError> {
+        self.with(|ctx| {
+            let converted = value::value_to_js(ctx, value)?;
+            ctx.globals().set(name, converted)
+        })
+    }
+}
+
+/// Converts a request callback return value into bytes.
+fn request_bytes(value: &rquickjs::Value<'_>) -> Option<Vec<u8>> {
+    if let Some(string) = value.as_string() {
+        return string.to_string().ok().map(String::into_bytes);
+    }
+    if let Some(int) = value.as_int() {
+        return Some(int.to_string().into_bytes());
+    }
+    if let Some(float) = value.as_float() {
+        return Some(float.to_string().into_bytes());
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::QuickJSEngine;
     use crate::engines::test_support::spec;
+    use wrkrs_engine::Value;
 
     #[test]
     fn evaluates_javascript() {
@@ -456,5 +685,223 @@ mod tests {
         let engine = QuickJSEngine::new(&spec(Some(&path))).unwrap();
         let method: String = engine.with(|ctx| ctx.eval("wrk.method")).unwrap();
         assert_eq!(method, "GET");
+    }
+
+    #[test]
+    fn resolve_filters_unreachable_addresses() {
+        use std::sync::Arc;
+
+        use crate::engines::test_support::{FakeResolver, address};
+        use wrkrs_engine::ScriptEngine;
+
+        let mut engine = QuickJSEngine::new(&spec(None)).unwrap();
+        let resolved = engine
+            .resolve("example.test", "8080", Arc::new(FakeResolver::default()))
+            .unwrap();
+        assert_eq!(resolved, vec![address(1)]);
+    }
+
+    #[test]
+    fn resolve_reports_lookup_failures() {
+        use std::sync::Arc;
+
+        use crate::engines::test_support::FailingResolver;
+        use wrkrs_engine::ScriptEngine;
+
+        let mut engine = QuickJSEngine::new(&spec(None)).unwrap();
+        let error = engine
+            .resolve("example.test", "8080", Arc::new(FailingResolver))
+            .unwrap_err();
+        assert_eq!(
+            error.raw_message(),
+            "unable to resolve example.test:8080 name or service not known"
+        );
+    }
+
+    #[test]
+    fn setup_assigns_the_address_and_calls_the_script() {
+        use std::sync::Arc;
+
+        use crate::engines::test_support::{FakeResolver, FakeThread, address};
+        use wrkrs_engine::{ScriptEngine, ThreadApi, Value};
+
+        let path = std::env::temp_dir().join("wrkrs-quickjs-setup");
+        std::fs::write(&path, "function setup(thread) { thread.set(\"id\", 7) }\n")
+            .expect("write temporary script");
+        let mut engine = QuickJSEngine::new(&spec(Some(&path))).unwrap();
+        engine
+            .resolve("example.test", "8080", Arc::new(FakeResolver::default()))
+            .unwrap();
+        let thread = Arc::new(FakeThread::default());
+        engine.setup(thread.clone()).unwrap();
+        assert_eq!(thread.addr(), Some(address(1)));
+        assert_eq!(thread.get_global("id").unwrap(), Value::Int(7));
+    }
+
+    #[test]
+    fn init_sets_the_thread_the_host_and_the_args() {
+        use std::sync::Arc;
+
+        use crate::engines::test_support::FakeThread;
+        use wrkrs_engine::ScriptEngine;
+
+        let path = std::env::temp_dir().join("wrkrs-quickjs-init");
+        std::fs::write(
+            &path,
+            "var seen\nfunction init(args) { seen = wrk.thread != null && args[0] }\n",
+        )
+        .expect("write temporary script");
+        let mut engine = QuickJSEngine::new(&spec(Some(&path))).unwrap();
+        engine
+            .init(
+                Arc::new(FakeThread::default()),
+                &["hello".to_owned(), "world".to_owned()],
+            )
+            .unwrap();
+        assert_eq!(
+            engine.get_global("seen").unwrap(),
+            Value::Str("hello".to_owned())
+        );
+        let host: String = engine.with(|ctx| ctx.eval("wrk.headers.Host")).unwrap();
+        assert_eq!(host, "example.test:8080");
+    }
+
+    #[test]
+    fn default_request_matches_the_core_formatter() {
+        use std::sync::Arc;
+
+        use crate::engines::test_support::FakeThread;
+        use wrkrs_engine::{ScriptEngine, format_request, host_header};
+
+        let mut engine = QuickJSEngine::new(&spec(None)).unwrap();
+        engine.init(Arc::new(FakeThread::default()), &[]).unwrap();
+        let request = engine.request().unwrap();
+        let host = host_header("example.test", Some("8080"));
+        let expected = format_request("GET", "/some/path", &[], None, Some(&host));
+        assert_eq!(request, expected);
+    }
+
+    #[test]
+    fn delay_returns_the_script_value() {
+        use std::sync::Arc;
+
+        use crate::engines::test_support::FakeThread;
+        use wrkrs_engine::ScriptEngine;
+
+        let path = std::env::temp_dir().join("wrkrs-quickjs-delay");
+        std::fs::write(&path, "function delay() { return 42 }\n").expect("write temporary script");
+        let mut engine = QuickJSEngine::new(&spec(Some(&path))).unwrap();
+        engine.init(Arc::new(FakeThread::default()), &[]).unwrap();
+        assert_eq!(engine.delay(), 42);
+    }
+
+    #[test]
+    fn response_delivers_status_headers_and_body() {
+        use std::sync::Arc;
+
+        use crate::engines::test_support::FakeThread;
+        use wrkrs_engine::ScriptEngine;
+
+        let path = std::env::temp_dir().join("wrkrs-quickjs-response");
+        std::fs::write(
+            &path,
+            "var seen\nfunction response(status, headers, body) { seen = [status, headers[\"Content-Type\"], body] }\n",
+        )
+        .expect("write temporary script");
+        let mut engine = QuickJSEngine::new(&spec(Some(&path))).unwrap();
+        engine.init(Arc::new(FakeThread::default()), &[]).unwrap();
+        engine
+            .response(
+                201,
+                &[("Content-Type".to_owned(), "text/plain".to_owned())],
+                b"payload",
+            )
+            .unwrap();
+        assert_eq!(
+            engine.get_global("seen").unwrap(),
+            Value::Table(vec![
+                (Value::Str("0".to_owned()), Value::Int(201)),
+                (
+                    Value::Str("1".to_owned()),
+                    Value::Str("text/plain".to_owned()),
+                ),
+                (Value::Str("2".to_owned()), Value::Str("payload".to_owned()),),
+            ])
+        );
+    }
+
+    #[test]
+    fn done_receives_summary_and_stats() {
+        use std::sync::Arc;
+
+        use crate::engines::test_support::{FakeStats, FakeThread};
+        use wrkrs_engine::{ErrorCounts, ScriptEngine, Summary};
+
+        let path = std::env::temp_dir().join("wrkrs-quickjs-done");
+        std::fs::write(
+            &path,
+            "var seen\nfunction done(summary, latency, requests) {\n\
+             seen = [summary.duration, summary.errors.connect,\n\
+             latency.percentile(99.0), requests.length]\n\
+             }\n",
+        )
+        .expect("write temporary script");
+        let mut engine = QuickJSEngine::new(&spec(Some(&path))).unwrap();
+        engine.init(Arc::new(FakeThread::default()), &[]).unwrap();
+        engine
+            .done(
+                &Summary {
+                    duration: 5_000_000,
+                    requests: 120,
+                    bytes: 4096,
+                    errors: ErrorCounts {
+                        connect: 2,
+                        ..ErrorCounts::default()
+                    },
+                },
+                Arc::new(FakeStats),
+                Arc::new(FakeStats),
+            )
+            .unwrap();
+        assert_eq!(
+            engine.get_global("seen").unwrap(),
+            Value::Table(vec![
+                (Value::Str("0".to_owned()), Value::Int(5_000_000)),
+                (Value::Str("1".to_owned()), Value::Int(2)),
+                (Value::Str("2".to_owned()), Value::Int(100)),
+                (Value::Str("3".to_owned()), Value::Int(7)),
+            ])
+        );
+    }
+
+    #[test]
+    fn capabilities_reflect_the_loaded_script() {
+        use std::sync::Arc;
+
+        use crate::engines::test_support::FakeThread;
+        use wrkrs_engine::ScriptEngine;
+
+        let mut engine = QuickJSEngine::new(&spec(None)).unwrap();
+        engine.init(Arc::new(FakeThread::default()), &[]).unwrap();
+        let capabilities = engine.capabilities();
+        assert!(capabilities.is_static);
+        assert!(!capabilities.wants_response);
+
+        let path = std::env::temp_dir().join("wrkrs-quickjs-full");
+        std::fs::write(
+            &path,
+            "function request() { return \"GET / HTTP/1.1\\r\\n\\r\\n\" }\n\
+             function response(status, headers, body) {}\n\
+             function delay() { return 0 }\n\
+             function done(summary, latency, requests) {}\n",
+        )
+        .expect("write temporary script");
+        let mut engine = QuickJSEngine::new(&spec(Some(&path))).unwrap();
+        engine.init(Arc::new(FakeThread::default()), &[]).unwrap();
+        let capabilities = engine.capabilities();
+        assert!(!capabilities.is_static);
+        assert!(capabilities.wants_response);
+        assert!(capabilities.has_delay);
+        assert!(capabilities.has_done);
     }
 }
