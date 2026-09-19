@@ -193,9 +193,8 @@ mod tests {
     fn renders_the_engine_listing() {
         use super::engine_listing;
         use crate::engines::engines;
-        assert_eq!(
-            engine_listing(engines()),
-            "  stub       .stub   Minimal engine used by tests\n"
-        );
+        let listing = engine_listing(engines());
+        // The stub entry always renders last with its own line.
+        assert!(listing.ends_with("  stub       .stub   Minimal engine used by tests\n"));
     }
 }

@@ -477,6 +477,28 @@ mod tests {
     }
 
     #[test]
+    fn every_example_script_loads() {
+        use wrkrs_engine::ScriptEngine;
+
+        let scripts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
+        let mut loaded = 0;
+        let entries =
+            // A read failure means the test tree is not in place, which
+            // the test cannot work around.
+            std::fs::read_dir(scripts).expect("read the scripts directory");
+        for entry in entries {
+            let path = entry.expect("read a directory entry").path();
+            if path.extension().is_some_and(|extension| extension == "lua") {
+                let engine = LuaEngine::new(&spec(Some(&path)))
+                    .unwrap_or_else(|error| panic!("{} failed to load: {error}", path.display()));
+                let _ = engine.capabilities();
+                loaded += 1;
+            }
+        }
+        assert!(loaded >= 9, "expected the example scripts, found {loaded}");
+    }
+
+    #[test]
     fn wrk_format_builds_requests_before_init() {
         // Before init the Host header is unset, so wrk.format emits a
         // request without one. The wrk table header assignment of nil

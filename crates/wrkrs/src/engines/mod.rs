@@ -65,6 +65,20 @@ impl std::fmt::Debug for EngineEntry {
 /// All engines compiled into this binary.
 pub fn engines() -> &'static [EngineEntry] {
     &[
+        #[cfg(feature = "engine-luajit")]
+        EngineEntry {
+            name: "luajit",
+            extensions: &["lua"],
+            description: "LuaJIT 2.1 (vendored)",
+            factory: lua::factory,
+        },
+        #[cfg(feature = "engine-lua54")]
+        EngineEntry {
+            name: "lua54",
+            extensions: &["lua"],
+            description: "Lua 5.4 (vendored)",
+            factory: lua::factory,
+        },
         #[cfg(feature = "engine-stub")]
         EngineEntry {
             name: "stub",
@@ -154,20 +168,34 @@ fn engine_list() -> String {
         .join(", ")
 }
 
-#[cfg(all(test, not(feature = "engine-stub")))]
-mod empty_registry_tests {
-    use super::{find, find_by_extension};
+#[cfg(all(test, any(feature = "engine-luajit", feature = "engine-lua54")))]
+mod lua_registry_tests {
+    use super::{engines, find, find_by_extension};
 
     #[test]
-    fn find_returns_none_for_any_name() {
-        assert!(find("luajit").is_none());
-        assert!(find("stub").is_none());
+    fn dispatches_lua_scripts_to_the_compiled_lua_engine() {
+        let entry = find_by_extension("bench.lua").unwrap();
+        #[cfg(feature = "engine-luajit")]
+        assert_eq!(entry.name, "luajit");
+        #[cfg(feature = "engine-lua54")]
+        assert_eq!(entry.name, "lua54");
     }
 
     #[test]
-    fn find_by_extension_returns_none_for_any_file() {
-        assert!(find_by_extension("bench.lua").is_none());
-        assert!(find_by_extension("bench").is_none());
+    fn finds_the_lua_engine_by_flag() {
+        #[cfg(feature = "engine-luajit")]
+        assert_eq!(find("luajit").unwrap().extensions, &["lua"]);
+        #[cfg(feature = "engine-lua54")]
+        assert_eq!(find("lua54").unwrap().extensions, &["lua"]);
+    }
+
+    #[test]
+    fn describes_the_lua_engine() {
+        let lua = engines()
+            .iter()
+            .find(|entry| entry.extensions.contains(&"lua"))
+            .unwrap();
+        assert!(!lua.description.is_empty());
     }
 }
 
@@ -217,10 +245,7 @@ mod stub_tests {
 
     #[test]
     fn registers_the_stub_engine() {
-        let table = engines();
-        assert_eq!(table.len(), 1);
-        assert_eq!(table[0].name, "stub");
-        assert_eq!(table[0].extensions, &["stub"]);
+        assert!(engines().iter().any(|entry| entry.name == "stub"));
     }
 
     #[test]
@@ -358,7 +383,10 @@ mod stub_tests {
         let error = select(Some("bench.stub"), Some("lua55")).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "engine 'lua55' not compiled in, compiled engines: stub (.stub)"
+            format!(
+                "engine 'lua55' not compiled in, compiled engines: {}",
+                super::engine_list()
+            )
         );
     }
 
@@ -367,7 +395,10 @@ mod stub_tests {
         let error = select(Some("bench.txt"), None).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "no engine handles the 'txt' extension, compiled engines: stub (.stub)"
+            format!(
+                "no engine handles the 'txt' extension, compiled engines: {}",
+                super::engine_list()
+            )
         );
     }
 
@@ -376,7 +407,10 @@ mod stub_tests {
         let error = select(Some("bench"), None).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "'bench' has no extension, compiled engines: stub (.stub)"
+            format!(
+                "'bench' has no extension, compiled engines: {}",
+                super::engine_list()
+            )
         );
     }
 }
