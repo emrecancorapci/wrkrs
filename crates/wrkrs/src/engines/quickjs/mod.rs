@@ -215,6 +215,8 @@ fn format_request_js<'js>(
 }
 
 mod address;
+#[cfg(test)]
+mod conformance;
 mod stats;
 mod thread;
 mod value;
