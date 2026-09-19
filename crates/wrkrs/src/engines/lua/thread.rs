@@ -108,8 +108,8 @@ fn assign_thread(api: &Arc<dyn ThreadApi>, key: &str, value: LuaValue) -> Result
 mod tests {
     use std::sync::Arc;
 
-    use super::super::test_support::FakeThread;
     use super::{Address, ThreadHandle};
+    use crate::engines::test_support::FakeThread;
     use wrkrs_engine::{ThreadApi, Value};
 
     fn thread_global(lua: &mlua::Lua, api: Arc<FakeThread>) {

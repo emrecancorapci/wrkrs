@@ -1,11 +1,27 @@
-//! Shared fakes for the Lua engine tests.
+//! Shared fakes and fixtures for the engine tests.
 
 use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::Path;
 use std::sync::Mutex;
 
-use wrkrs_engine::{EngineError, ResolveApi, StatsView, ThreadApi, Value};
+use wrkrs_engine::{EngineError, ResolveApi, ScriptSpec, StatsView, ThreadApi, UrlRef, Value};
+
+/// A spec pointing at example.test with a script slot.
+pub fn spec(script: Option<&Path>) -> ScriptSpec {
+    ScriptSpec {
+        url: "http://example.test:8080/some/path".to_owned(),
+        parts: UrlRef {
+            scheme: Some("http".to_owned()),
+            host: Some("example.test".to_owned()),
+            port: Some("8080".to_owned()),
+            path: "/some/path".to_owned(),
+        },
+        script: script.map(Path::to_path_buf),
+        headers: vec![],
+    }
+}
 
 /// Records thread state the way the host would.
 #[derive(Default)]

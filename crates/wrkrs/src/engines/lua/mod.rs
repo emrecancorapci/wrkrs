@@ -21,8 +21,6 @@ const WRK_LUA: &str = include_str!("../../../../../src/wrk.lua");
 type ResolverSlot = Arc<Mutex<Option<Arc<dyn ResolveApi>>>>;
 
 mod stats;
-#[cfg(test)]
-pub(super) mod test_support;
 mod thread;
 mod value;
 
@@ -393,22 +391,7 @@ fn request_bytes(value: &LuaValue) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::LuaEngine;
-    use wrkrs_engine::ScriptSpec;
-    use wrkrs_engine::UrlRef;
-
-    fn spec(script: Option<&std::path::Path>) -> ScriptSpec {
-        ScriptSpec {
-            url: "http://example.test:8080/some/path".to_owned(),
-            parts: UrlRef {
-                scheme: Some("http".to_owned()),
-                host: Some("example.test".to_owned()),
-                port: Some("8080".to_owned()),
-                path: "/some/path".to_owned(),
-            },
-            script: script.map(std::path::Path::to_path_buf),
-            headers: vec![],
-        }
-    }
+    use crate::engines::test_support::spec;
 
     fn temp_script(name: &str, source: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("wrkrs-lua-{name}"));
@@ -516,7 +499,7 @@ mod tests {
     fn resolve_filters_unreachable_addresses() {
         use std::sync::Arc;
 
-        use super::test_support::{FakeResolver, address};
+        use crate::engines::test_support::{FakeResolver, address};
         use wrkrs_engine::ScriptEngine;
 
         let mut engine = LuaEngine::new(&spec(None)).unwrap();
@@ -532,7 +515,7 @@ mod tests {
     fn resolve_reports_lookup_failures() {
         use std::sync::Arc;
 
-        use super::test_support::FailingResolver;
+        use crate::engines::test_support::FailingResolver;
         use wrkrs_engine::ScriptEngine;
 
         let mut engine = LuaEngine::new(&spec(None)).unwrap();
@@ -549,7 +532,7 @@ mod tests {
     fn setup_assigns_the_first_address_to_the_thread() {
         use std::sync::Arc;
 
-        use super::test_support::{FakeResolver, FakeThread, address};
+        use crate::engines::test_support::{FakeResolver, FakeThread, address};
         use wrkrs_engine::{ScriptEngine, ThreadApi};
 
         let mut engine = LuaEngine::new(&spec(None)).unwrap();
@@ -565,7 +548,7 @@ mod tests {
     fn setup_calls_the_script_setup_function() {
         use std::sync::Arc;
 
-        use super::test_support::{FakeResolver, FakeThread};
+        use crate::engines::test_support::{FakeResolver, FakeThread};
         use wrkrs_engine::{ScriptEngine, ThreadApi, Value};
 
         let script = temp_script(
@@ -585,7 +568,7 @@ mod tests {
     fn init_passes_args_from_index_zero() {
         use std::sync::Arc;
 
-        use super::test_support::FakeThread;
+        use crate::engines::test_support::FakeThread;
         use wrkrs_engine::ScriptEngine;
 
         let script = temp_script("args", "function init(args) first = args[0] end\n");
@@ -602,7 +585,7 @@ mod tests {
     fn default_request_matches_the_core_formatter() {
         use std::sync::Arc;
 
-        use super::test_support::FakeThread;
+        use crate::engines::test_support::FakeThread;
         use wrkrs_engine::{ScriptEngine, format_request, host_header};
 
         let mut engine = LuaEngine::new(&spec(None)).unwrap();
@@ -617,7 +600,7 @@ mod tests {
     fn delay_returns_the_script_value() {
         use std::sync::Arc;
 
-        use super::test_support::FakeThread;
+        use crate::engines::test_support::FakeThread;
         use wrkrs_engine::ScriptEngine;
 
         let script = temp_script("delay", "function delay() return 42 end\n");
@@ -630,7 +613,7 @@ mod tests {
     fn response_delivers_status_headers_and_body() {
         use std::sync::Arc;
 
-        use super::test_support::FakeThread;
+        use crate::engines::test_support::FakeThread;
         use wrkrs_engine::ScriptEngine;
 
         let script = temp_script(
@@ -672,7 +655,7 @@ mod tests {
     fn done_receives_summary_and_stats() {
         use std::sync::Arc;
 
-        use super::test_support::{FakeStats, FakeThread};
+        use crate::engines::test_support::{FakeStats, FakeThread};
         use wrkrs_engine::{ErrorCounts, ScriptEngine, Summary};
 
         let script = temp_script(
@@ -723,7 +706,7 @@ mod tests {
     fn capabilities_reflect_the_loaded_script() {
         use std::sync::Arc;
 
-        use super::test_support::FakeThread;
+        use crate::engines::test_support::FakeThread;
         use wrkrs_engine::ScriptEngine;
 
         let mut engine = LuaEngine::new(&spec(None)).unwrap();
