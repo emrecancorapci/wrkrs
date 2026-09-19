@@ -10,8 +10,29 @@ jobs:
       matrix:
         builder: [macos-latest, ubuntu-latest]
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: build
         run: make
+
+  rust:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+        features: ["", "--no-default-features --features engine-lua54,engine-quickjs"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: lint
+        run: just lint "${{ matrix.features }}"
+      - name: build
+        run: just build "${{ matrix.features }}"
+      - name: test
+        run: just test "${{ matrix.features }}"
