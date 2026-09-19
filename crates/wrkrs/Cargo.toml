@@ -9,12 +9,13 @@ repository.workspace = true
 
 [features]
 default = ["engine-luajit", "engine-quickjs"]
-engine-luajit = []
-engine-lua54 = []
+engine-luajit = ["dep:mlua", "mlua/luajit", "mlua/vendored", "mlua/send"]
+engine-lua54 = ["dep:mlua", "mlua/lua54", "mlua/vendored", "mlua/send"]
 engine-quickjs = []
 engine-stub = []
 
 [dependencies]
+mlua = { version = "0.12.1", default-features = false, optional = true }
 thiserror = "2.0.20"
 wrkrs-engine.workspace = true
 
