@@ -91,6 +91,13 @@ pub fn engines() -> &'static [EngineEntry] {
             description: "Minimal engine used by tests",
             factory: stub::factory,
         },
+        #[cfg(feature = "engine-quickjs")]
+        EngineEntry {
+            name: "quickjs",
+            extensions: &["js"],
+            description: "QuickJS (rquickjs)",
+            factory: quickjs::factory,
+        },
     ]
 }
 
@@ -201,6 +208,16 @@ mod lua_registry_tests {
             .find(|entry| entry.extensions.contains(&"lua"))
             .unwrap();
         assert!(!lua.description.is_empty());
+    }
+}
+
+#[cfg(all(test, feature = "engine-quickjs"))]
+mod quickjs_registry_tests {
+    use super::find_by_extension;
+
+    #[test]
+    fn dispatches_js_scripts_to_the_quickjs_engine() {
+        assert_eq!(find_by_extension("bench.js").unwrap().name, "quickjs");
     }
 }
 
