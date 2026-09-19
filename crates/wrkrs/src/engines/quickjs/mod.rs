@@ -120,7 +120,15 @@ fn install_wrk(ctx: &rquickjs::Ctx<'_>, spec: &ScriptSpec) -> Result<(), rquickj
     let format = rquickjs::Function::new(ctx.clone(), format_request_js)?;
     wrk.set("format", format)?;
     ctx.globals().set("wrk", wrk)?;
+
+    let print = rquickjs::Function::new(ctx.clone(), print_js)?;
+    ctx.globals().set("print", print)?;
     Ok(())
+}
+
+/// Prints a line to stdout, the console stand in for scripts.
+fn print_js(text: rquickjs::function::Opt<String>) {
+    println!("{}", text.0.unwrap_or_default());
 }
 
 /// Backs wrk.format with the core formatter.
@@ -685,6 +693,28 @@ mod tests {
         let engine = QuickJSEngine::new(&spec(Some(&path))).unwrap();
         let method: String = engine.with(|ctx| ctx.eval("wrk.method")).unwrap();
         assert_eq!(method, "GET");
+    }
+
+    #[test]
+    fn every_example_script_loads() {
+        use wrkrs_engine::ScriptEngine;
+
+        let scripts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
+        let entries =
+            // A read failure means the test tree is not in place, which
+            // the test cannot work around.
+            std::fs::read_dir(scripts).expect("read the scripts directory");
+        let mut loaded = 0;
+        for entry in entries {
+            let path = entry.expect("read a directory entry").path();
+            if path.extension().is_some_and(|extension| extension == "js") {
+                let engine = QuickJSEngine::new(&spec(Some(&path)))
+                    .unwrap_or_else(|error| panic!("{} failed to load: {error}", path.display()));
+                let _ = engine.capabilities();
+                loaded += 1;
+            }
+        }
+        assert!(loaded >= 6, "expected the example scripts, found {loaded}");
     }
 
     #[test]
