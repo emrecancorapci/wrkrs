@@ -54,6 +54,42 @@ pub fn run(name: &str, make: MakeEngine, scripts: &Scripts) {
     done(name, make, scripts.done_capture);
     setup_and_init(name, make, scripts);
     capabilities(name, make, scripts.full);
+    errors(name, make, scripts);
+}
+
+/// Script errors follow the wrk rules: load failures keep the default
+/// behavior, runtime failures surface through the callback result.
+fn errors(name: &str, make: MakeEngine, scripts: &Scripts) {
+    // a broken script still yields a working default environment
+    let mut engine = engine_for(name, make, "syntax", Some(scripts.syntax_error));
+    engine
+        .init(Arc::new(FakeThread::default()), &[])
+        .unwrap_or_else(|error| panic!("{name}: init failed: {error}"));
+    assert!(
+        engine.capabilities().is_static,
+        "{name}: broken script must fall back to defaults"
+    );
+    let host = host_header("example.test", Some("8080"));
+    let expected = format_request("GET", "/some/path", &[], None, Some(&host));
+    assert_eq!(
+        engine.request().unwrap_or_else(|e| panic!("{name}: {e}")),
+        expected,
+        "{name}: broken script must still produce the default request"
+    );
+
+    // a runtime error inside request surfaces to the host
+    let mut engine = engine_for(name, make, "runtime", Some(scripts.runtime_error));
+    engine
+        .init(Arc::new(FakeThread::default()), &[])
+        .unwrap_or_else(|error| panic!("{name}: init failed: {error}"));
+    let error = engine
+        .request()
+        .err()
+        .unwrap_or_else(|| panic!("{name}: request error must surface"));
+    assert!(
+        error.raw_message().contains("boom"),
+        "{name}: unexpected request error: {error}"
+    );
 }
 
 /// Capabilities must reflect what the loaded script defines.
