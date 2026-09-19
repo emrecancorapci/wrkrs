@@ -5,6 +5,29 @@ use wrkrs_engine::{EngineError, ScriptEngine, ScriptSpec};
 #[cfg(feature = "engine-stub")]
 pub mod stub;
 
+/// Engine names this project ships, used to add rebuild hints.
+const PROJECT_ENGINES: &[&str] = &["luajit", "lua54", "quickjs", "stub"];
+
+/// Error choosing the engine for a run.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SelectionError {
+    /// `-e` was given without a script to run.
+    #[error("option -e requires a script (-s)")]
+    EngineWithoutScript,
+    /// The named engine exists in this project but is not compiled in.
+    #[error("engine '{0}' not compiled in, rebuild with --features engine-{0}")]
+    KnownEngineNotCompiled(String),
+    /// The named engine is unknown to this project.
+    #[error("engine '{0}' not compiled in, compiled engines: {1}")]
+    UnknownEngine(String, String),
+    /// No compiled engine handles the script extension.
+    #[error("no engine handles the '{0}' extension, compiled engines: {1}")]
+    UnknownExtension(String, String),
+    /// The script has no extension to dispatch on.
+    #[error("'{0}' has no extension, compiled engines: {1}")]
+    NoExtension(String, String),
+}
+
 /// One compiled-in scripting engine.
 ///
 /// Entries are registered at compile time from cargo features. The table
@@ -18,6 +41,23 @@ pub struct EngineEntry {
     pub description: &'static str,
     /// Builds one engine instance for a spec.
     pub factory: fn(&ScriptSpec) -> Result<Box<dyn ScriptEngine>, EngineError>,
+}
+
+impl PartialEq for EngineEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.extensions == other.extensions
+    }
+}
+
+impl std::fmt::Debug for EngineEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EngineEntry")
+            .field("name", &self.name)
+            .field("extensions", &self.extensions)
+            .field("description", &self.description)
+            .finish_non_exhaustive()
+    }
 }
 
 /// All engines compiled into this binary.
@@ -46,6 +86,72 @@ pub fn find_by_extension(script: &str) -> Option<&'static EngineEntry> {
         .find(|entry| entry.extensions.contains(&extension))
 }
 
+/// Chooses the engine for a run.
+///
+/// Dispatch follows the wrkrs rules: `-e` overrides, otherwise the
+/// script extension decides. Returns `None` when no script was given
+/// and no engine was forced, which leaves the host with the default
+/// request path.
+pub fn select(
+    script: Option<&str>,
+    engine: Option<&str>,
+) -> Result<Option<&'static EngineEntry>, SelectionError> {
+    let selected = match engine {
+        Some(name) => Some(find(name).ok_or_else(|| unknown_engine(name))?),
+        None => None,
+    };
+
+    match (script, selected) {
+        (None, Some(_)) => Err(SelectionError::EngineWithoutScript),
+        (None, None) => Ok(None),
+        (Some(_), Some(entry)) => Ok(Some(entry)),
+        (Some(script), None) => find_by_extension(script)
+            .map(Some)
+            .ok_or_else(|| unknown_extension(script)),
+    }
+}
+
+/// Builds the unknown engine error, with a rebuild hint when the name
+/// belongs to a project engine.
+fn unknown_engine(name: &str) -> SelectionError {
+    if PROJECT_ENGINES.contains(&name) {
+        SelectionError::KnownEngineNotCompiled(name.to_owned())
+    } else {
+        SelectionError::UnknownEngine(name.to_owned(), engine_list())
+    }
+}
+
+/// Builds the dispatch error for a script no engine can take.
+fn unknown_extension(script: &str) -> SelectionError {
+    match Path::new(script)
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some(extension) => SelectionError::UnknownExtension(extension.to_owned(), engine_list()),
+        None => SelectionError::NoExtension(script.to_owned(), engine_list()),
+    }
+}
+
+/// Renders the compiled engine list used in error messages.
+fn engine_list() -> String {
+    let entries = engines();
+    if entries.is_empty() {
+        return "(none)".to_owned();
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            let extensions: Vec<String> = entry
+                .extensions
+                .iter()
+                .map(|extension| format!(".{extension}"))
+                .collect();
+            format!("{} ({})", entry.name, extensions.join(" "))
+        })
+        .collect::<Vec<String>>()
+        .join(", ")
+}
+
 #[cfg(all(test, not(feature = "engine-stub")))]
 mod empty_registry_tests {
     use super::{find, find_by_extension};
@@ -69,7 +175,7 @@ mod stub_tests {
     use std::sync::{Arc, Mutex};
 
     use super::stub::factory;
-    use super::{engines, find, find_by_extension};
+    use super::{SelectionError, engines, find, find_by_extension, select};
     use wrkrs_engine::{ResolveApi, ScriptSpec, UrlRef, Value};
 
     use std::io;
@@ -203,5 +309,70 @@ mod stub_tests {
         let mut engine = factory(&spec()).unwrap();
         engine.init(handle, &[]).unwrap();
         assert_eq!(engine.delay(), 0);
+    }
+
+    #[test]
+    fn select_dispatches_by_extension() {
+        let entry = select(Some("bench.stub"), None).unwrap().unwrap();
+        assert_eq!(entry.name, "stub");
+    }
+
+    #[test]
+    fn select_returns_none_without_a_script() {
+        assert!(select(None, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn select_lets_the_engine_flag_override_the_extension() {
+        let entry = select(Some("anything.txt"), Some("stub")).unwrap().unwrap();
+        assert_eq!(entry.name, "stub");
+    }
+
+    #[test]
+    fn select_rejects_the_engine_flag_without_a_script() {
+        assert_eq!(
+            select(None, Some("stub")),
+            Err(SelectionError::EngineWithoutScript)
+        );
+        assert_eq!(
+            select(None, Some("stub")).unwrap_err().to_string(),
+            "option -e requires a script (-s)"
+        );
+    }
+
+    #[test]
+    fn select_reports_project_engines_with_a_rebuild_hint() {
+        let error = select(Some("bench.stub"), Some("lua54")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "engine 'lua54' not compiled in, rebuild with --features engine-lua54"
+        );
+    }
+
+    #[test]
+    fn select_reports_unknown_engines_with_the_table() {
+        let error = select(Some("bench.stub"), Some("lua55")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "engine 'lua55' not compiled in, compiled engines: stub (.stub)"
+        );
+    }
+
+    #[test]
+    fn select_reports_unhandled_extensions_with_the_table() {
+        let error = select(Some("bench.txt"), None).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "no engine handles the 'txt' extension, compiled engines: stub (.stub)"
+        );
+    }
+
+    #[test]
+    fn select_reports_scripts_without_an_extension() {
+        let error = select(Some("bench"), None).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "'bench' has no extension, compiled engines: stub (.stub)"
+        );
     }
 }

@@ -15,6 +15,7 @@ engine-quickjs = []
 engine-stub = []
 
 [dependencies]
+thiserror = "2.0.20"
 wrkrs-engine.workspace = true
 
 [lints]
