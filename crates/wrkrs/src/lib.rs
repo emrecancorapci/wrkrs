@@ -1,5 +1,6 @@
 //! wrkrs core: configuration, engine registry, and the benchmark runtime.
 
+pub mod cli;
 pub mod engines;
 
 #[cfg(all(feature = "engine-luajit", feature = "engine-lua54"))]
