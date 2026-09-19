@@ -6,7 +6,9 @@
 
 use std::sync::Arc;
 
-use wrkrs_engine::{EngineError, ScriptEngine, ScriptSpec, Value, format_request, host_header};
+use wrkrs_engine::{
+    EngineError, ScriptEngine, ScriptSpec, ThreadApi, Value, format_request, host_header,
+};
 
 use crate::fixtures::{FakeThread, spec, temp_script};
 
@@ -35,6 +37,8 @@ pub struct Scripts {
     pub runtime_error: &'static str,
     /// Fails to parse.
     pub syntax_error: &'static str,
+    /// Transfers a function value into the thread, which must fail.
+    pub transfer_reject: &'static str,
 }
 
 /// Runs every conformance case against one engine.
@@ -48,6 +52,76 @@ pub fn run(name: &str, make: MakeEngine, scripts: &Scripts) {
     delay(name, make, scripts.delay);
     response(name, make, scripts.response_capture);
     done(name, make, scripts.done_capture);
+    setup_and_init(name, make, scripts);
+}
+
+/// Setup and init wire the thread: values transfer in, the first
+/// argument lands at index zero, and unsupported values are rejected
+/// with the wrk message.
+fn setup_and_init(name: &str, make: MakeEngine, scripts: &Scripts) {
+    use crate::fixtures::{FakeResolver, FakeThread};
+
+    // setup transfers a value into the thread environment
+    let mut engine = engine_for(name, make, "setup", Some(scripts.setup_transfer));
+    engine
+        .resolve(
+            "example.test",
+            "8080",
+            std::sync::Arc::new(FakeResolver::default()),
+        )
+        .unwrap_or_else(|error| panic!("{name}: resolve failed: {error}"));
+    let thread = Arc::new(FakeThread::default());
+    engine
+        .setup(thread.clone())
+        .unwrap_or_else(|error| panic!("{name}: setup failed: {error}"));
+    assert_eq!(
+        thread
+            .get_global("id")
+            .unwrap_or_else(|e| panic!("{name}: {e}")),
+        Value::Int(7),
+        "{name}: setup transfer mismatch"
+    );
+    assert_eq!(
+        thread.addr(),
+        Some(crate::fixtures::address(1)),
+        "{name}: setup must assign the first address"
+    );
+
+    // init receives the extra arguments from index zero
+    let mut engine = engine_for(name, make, "args", Some(scripts.init_args));
+    engine
+        .init(
+            Arc::new(FakeThread::default()),
+            &["hello".to_owned(), "world".to_owned()],
+        )
+        .unwrap_or_else(|error| panic!("{name}: init failed: {error}"));
+    assert_eq!(
+        engine
+            .get_global("seen_first")
+            .unwrap_or_else(|error| panic!("{name}: args read failed: {error}")),
+        Value::Str("hello".to_owned()),
+        "{name}: first argument must land at index zero"
+    );
+
+    // a function value cannot transfer into the thread
+    let mut engine = engine_for(name, make, "reject", Some(scripts.transfer_reject));
+    engine
+        .resolve(
+            "example.test",
+            "8080",
+            std::sync::Arc::new(FakeResolver::default()),
+        )
+        .unwrap_or_else(|error| panic!("{name}: resolve failed: {error}"));
+    let error = engine
+        .setup(Arc::new(FakeThread::default()))
+        .err()
+        .unwrap_or_else(|| panic!("{name}: function transfer must fail"));
+    assert!(
+        error
+            .to_string()
+            .contains("cannot transfer 'function' to thread"),
+        "{name}: unexpected transfer error: {error}"
+    );
 }
 
 /// The done callback reads the summary fields and both stats objects.

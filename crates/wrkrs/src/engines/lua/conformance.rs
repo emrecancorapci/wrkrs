@@ -31,6 +31,7 @@ const SCRIPTS: Scripts = Scripts {
            function done(summary, latency, requests) end\n",
     runtime_error: "function request() error(\"boom\") end\n",
     syntax_error: "this is not lua\n",
+    transfer_reject: "function setup(thread) thread:set(\"f\", print) end\n",
 };
 
 #[test]

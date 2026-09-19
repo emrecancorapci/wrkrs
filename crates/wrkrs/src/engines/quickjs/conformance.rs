@@ -35,6 +35,7 @@ const SCRIPTS: Scripts = Scripts {
            function done(summary, latency, requests) {}\n",
     runtime_error: "function request() { throw new Error(\"boom\") }\n",
     syntax_error: "this is not javascript\n",
+    transfer_reject: "function setup(thread) { thread.set(\"f\", function () {}) }\n",
 };
 
 #[test]
