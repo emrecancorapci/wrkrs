@@ -24,7 +24,28 @@ impl QuickJSEngine {
             Context::full(&runtime).map_err(|error| EngineError::Runtime(error.to_string()))?;
         let engine = QuickJSEngine { runtime, context };
         engine.with(|ctx| install_wrk(ctx, spec))?;
+        engine.run_script_file(spec.script.as_deref());
         Ok(engine)
+    }
+
+    /// Runs the script file for an environment.
+    ///
+    /// Load failures print `path: message` on stderr and the run keeps
+    /// the default behavior, matching script.c.
+    fn run_script_file(&self, script: Option<&std::path::Path>) {
+        let Some(path) = script else {
+            return;
+        };
+        let outcome = match std::fs::read_to_string(path) {
+            Ok(source) => self.with(|ctx| ctx.eval::<(), _>(source.as_str())),
+            Err(error) => Err(EngineError::Runtime(format!(
+                "cannot open {}: {error}",
+                path.display()
+            ))),
+        };
+        if let Err(error) = &outcome {
+            eprintln!("{}: {}", path.display(), error.raw_message());
+        }
     }
 
     /// Runs a closure inside the context with engine error mapping.
@@ -291,11 +312,38 @@ mod tests {
             .with(|ctx| {
                 ctx.eval(
                     "let h = {\"Content-Length\": 9}\n\
-                     wrk.format(\"GET\", \"/\", h, null)\n\
+                     wrk.format(\"GET\", \"/\", h, null);\n\
                      !(\"Content-Length\" in h)",
                 )
             })
             .unwrap();
         assert!(removed);
+    }
+
+    #[test]
+    fn script_files_run_and_can_change_the_wrk_object() {
+        let path = std::env::temp_dir().join("wrkrs-quickjs-method");
+        std::fs::write(&path, "wrk.method = \"POST\"\n").expect("write temporary script");
+        let engine = QuickJSEngine::new(&spec(Some(&path))).unwrap();
+        let method: String = engine.with(|ctx| ctx.eval("wrk.method")).unwrap();
+        assert_eq!(method, "POST");
+    }
+
+    #[test]
+    fn script_let_bindings_survive_for_callbacks() {
+        let path = std::env::temp_dir().join("wrkrs-quickjs-let");
+        std::fs::write(&path, "let counter = 1\n").expect("write temporary script");
+        let engine = QuickJSEngine::new(&spec(Some(&path))).unwrap();
+        let counter: i32 = engine.with(|ctx| ctx.eval("counter")).unwrap();
+        assert_eq!(counter, 1);
+    }
+
+    #[test]
+    fn script_load_errors_report_and_continue() {
+        let path = std::env::temp_dir().join("wrkrs-quickjs-broken");
+        std::fs::write(&path, "this is not javascript\n").expect("write temporary script");
+        let engine = QuickJSEngine::new(&spec(Some(&path))).unwrap();
+        let method: String = engine.with(|ctx| ctx.eval("wrk.method")).unwrap();
+        assert_eq!(method, "GET");
     }
 }
