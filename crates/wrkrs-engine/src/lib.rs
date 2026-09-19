@@ -19,6 +19,7 @@ mod api;
 mod capabilities;
 mod engine;
 mod error;
+mod format;
 mod spec;
 mod value;
 
@@ -26,5 +27,6 @@ pub use api::{ErrorCounts, ResolveApi, StatsView, Summary, ThreadApi};
 pub use capabilities::Capabilities;
 pub use engine::ScriptEngine;
 pub use error::EngineError;
+pub use format::{format_request, host_header};
 pub use spec::{ScriptSpec, UrlRef};
 pub use value::Value;
