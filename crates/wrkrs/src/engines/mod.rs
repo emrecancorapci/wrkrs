@@ -257,6 +257,7 @@ mod stub_tests {
     #[test]
     fn finds_stub_by_extension() {
         assert_eq!(find_by_extension("bench.stub").unwrap().name, "stub");
+        #[cfg(not(any(feature = "engine-luajit", feature = "engine-lua54")))]
         assert!(find_by_extension("bench.lua").is_none());
         assert!(find_by_extension("bench").is_none());
     }
@@ -371,10 +372,16 @@ mod stub_tests {
 
     #[test]
     fn select_reports_project_engines_with_a_rebuild_hint() {
-        let error = select(Some("bench.stub"), Some("lua54")).unwrap_err();
+        // Whichever Lua runtime is absent stands in for the not compiled
+        // project engine.
+        #[cfg(feature = "engine-luajit")]
+        let missing = "lua54";
+        #[cfg(feature = "engine-lua54")]
+        let missing = "luajit";
+        let error = select(Some("bench.stub"), Some(missing)).unwrap_err();
         assert_eq!(
             error.to_string(),
-            "engine 'lua54' not compiled in, rebuild with --features engine-lua54"
+            format!("engine '{missing}' not compiled in, rebuild with --features engine-{missing}")
         );
     }
 
