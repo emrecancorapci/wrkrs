@@ -2,6 +2,8 @@ use std::path::Path;
 
 use wrkrs_engine::{EngineError, ScriptEngine, ScriptSpec};
 
+#[cfg(any(feature = "engine-luajit", feature = "engine-lua54"))]
+pub mod lua;
 #[cfg(feature = "engine-stub")]
 pub mod stub;
 
