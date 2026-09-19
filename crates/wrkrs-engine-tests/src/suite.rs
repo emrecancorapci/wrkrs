@@ -47,6 +47,48 @@ pub fn run(name: &str, make: MakeEngine, scripts: &Scripts) {
     pipeline(name, make, scripts.pipeline);
     delay(name, make, scripts.delay);
     response(name, make, scripts.response_capture);
+    done(name, make, scripts.done_capture);
+}
+
+/// The done callback reads the summary fields and both stats objects.
+fn done(name: &str, make: MakeEngine, script: &str) {
+    use crate::fixtures::FakeStats;
+    use wrkrs_engine::{ErrorCounts, Summary};
+
+    let mut engine = engine_for(name, make, "done", Some(script));
+    engine
+        .init(Arc::new(FakeThread::default()), &[])
+        .unwrap_or_else(|error| panic!("{name}: init failed: {error}"));
+    engine
+        .done(
+            &Summary {
+                duration: 5_000_000,
+                requests: 120,
+                bytes: 4096,
+                errors: ErrorCounts {
+                    connect: 2,
+                    ..ErrorCounts::default()
+                },
+            },
+            Arc::new(FakeStats),
+            Arc::new(FakeStats),
+        )
+        .unwrap_or_else(|error| panic!("{name}: done failed: {error}"));
+    let expected = [
+        ("seen_duration", Value::Int(5_000_000)),
+        ("seen_connect", Value::Int(2)),
+        ("seen_percentile", Value::Int(100)),
+        ("seen_length", Value::Int(7)),
+    ];
+    for (key, value) in expected {
+        assert_eq!(
+            engine
+                .get_global(key)
+                .unwrap_or_else(|error| panic!("{name}: {key} read failed: {error}")),
+            value,
+            "{name}: done {key} mismatch"
+        );
+    }
 }
 
 /// The response callback receives the status, headers, and body
