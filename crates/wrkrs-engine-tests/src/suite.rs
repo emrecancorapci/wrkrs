@@ -45,6 +45,16 @@ pub fn run(name: &str, make: MakeEngine, scripts: &Scripts) {
     default_request(name, make);
     post(name, make, scripts.post);
     pipeline(name, make, scripts.pipeline);
+    delay(name, make, scripts.delay);
+}
+
+/// The delay callback value reaches the host as milliseconds.
+fn delay(name: &str, make: MakeEngine, script: &str) {
+    let mut engine = engine_for(name, make, "delay", Some(script));
+    engine
+        .init(Arc::new(FakeThread::default()), &[])
+        .unwrap_or_else(|error| panic!("{name}: init failed: {error}"));
+    assert_eq!(engine.delay(), 125, "{name}: delay value mismatch");
 }
 
 /// A pipelined request is the exact concatenation of the formatted
