@@ -182,6 +182,10 @@ fn format_request_js<'js>(
     })
 }
 
+// Unused until the callbacks land, the allow comes off with them.
+#[allow(dead_code)]
+mod value;
+
 /// Presents an absent part as null, matching the Lua nil.
 fn part_value<'js>(
     ctx: &rquickjs::Ctx<'js>,
