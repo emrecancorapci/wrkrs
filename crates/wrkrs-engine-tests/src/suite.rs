@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use wrkrs_engine::{EngineError, ScriptEngine, ScriptSpec, format_request, host_header};
+use wrkrs_engine::{EngineError, ScriptEngine, ScriptSpec, Value, format_request, host_header};
 
 use crate::fixtures::{FakeThread, spec, temp_script};
 
@@ -46,6 +46,55 @@ pub fn run(name: &str, make: MakeEngine, scripts: &Scripts) {
     post(name, make, scripts.post);
     pipeline(name, make, scripts.pipeline);
     delay(name, make, scripts.delay);
+    response(name, make, scripts.response_capture);
+}
+
+/// The response callback receives the status, headers, and body
+/// faithfully, with duplicate header names keeping the last value.
+fn response(name: &str, make: MakeEngine, script: &str) {
+    let mut engine = engine_for(name, make, "response", Some(script));
+    engine
+        .init(Arc::new(FakeThread::default()), &[])
+        .unwrap_or_else(|error| panic!("{name}: init failed: {error}"));
+    engine
+        .response(
+            201,
+            &[
+                ("Content-Type".to_owned(), "text/plain".to_owned()),
+                ("X-Dup".to_owned(), "first".to_owned()),
+                ("X-Dup".to_owned(), "second".to_owned()),
+            ],
+            b"payload",
+        )
+        .unwrap_or_else(|error| panic!("{name}: response failed: {error}"));
+    assert_eq!(
+        engine
+            .get_global("seen_status")
+            .unwrap_or_else(|error| panic!("{name}: status read failed: {error}")),
+        Value::Int(201),
+        "{name}: response status mismatch"
+    );
+    assert_eq!(
+        engine
+            .get_global("seen_type")
+            .unwrap_or_else(|error| panic!("{name}: header read failed: {error}")),
+        Value::Str("text/plain".to_owned()),
+        "{name}: response header mismatch"
+    );
+    assert_eq!(
+        engine
+            .get_global("seen_dup")
+            .unwrap_or_else(|error| panic!("{name}: duplicate read failed: {error}")),
+        Value::Str("second".to_owned()),
+        "{name}: duplicate header must keep the last value"
+    );
+    assert_eq!(
+        engine
+            .get_global("seen_body")
+            .unwrap_or_else(|error| panic!("{name}: body read failed: {error}")),
+        Value::Str("payload".to_owned()),
+        "{name}: response body mismatch"
+    );
 }
 
 /// The delay callback value reaches the host as milliseconds.
