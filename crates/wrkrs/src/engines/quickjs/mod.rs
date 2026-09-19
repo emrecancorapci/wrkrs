@@ -18,6 +18,12 @@ use self::address::AddressObject;
 /// Shared slot holding the host resolver the lookup functions use.
 type ResolverSlot = Arc<Mutex<Option<Arc<dyn ResolveApi>>>>;
 
+/// Heap ceiling for one scripting environment.
+const MEMORY_LIMIT: usize = 256 * 1024 * 1024;
+
+/// Native stack ceiling for one scripting environment.
+const STACK_LIMIT: usize = 1024 * 1024;
+
 /// One QuickJS scripting environment driven by the host.
 pub struct QuickJSEngine {
     context: Context,
@@ -31,6 +37,11 @@ impl QuickJSEngine {
         let context = Runtime::new()
             .map_err(|error| EngineError::Runtime(error.to_string()))
             .and_then(|runtime| {
+                // Guard rails against runaway scripts: a script that
+                // exhausts either limit fails that call instead of
+                // taking the process down.
+                runtime.set_memory_limit(MEMORY_LIMIT);
+                runtime.set_max_stack_size(STACK_LIMIT);
                 Context::full(&runtime).map_err(|error| EngineError::Runtime(error.to_string()))
             })?;
         let engine = QuickJSEngine {
