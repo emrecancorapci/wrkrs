@@ -42,7 +42,7 @@ impl ScriptEngine for StubEngine {
         &mut self,
         host: &str,
         service: &str,
-        resolver: &dyn ResolveApi,
+        resolver: Arc<dyn ResolveApi>,
     ) -> Result<Vec<SocketAddr>, EngineError> {
         let addresses = resolver
             .lookup(host, service)
@@ -53,7 +53,7 @@ impl ScriptEngine for StubEngine {
             .collect())
     }
 
-    fn setup(&mut self, _thread: &dyn ThreadApi) -> Result<(), EngineError> {
+    fn setup(&mut self, _thread: Arc<dyn ThreadApi>) -> Result<(), EngineError> {
         Ok(())
     }
 
@@ -82,8 +82,8 @@ impl ScriptEngine for StubEngine {
     fn done(
         &mut self,
         _summary: &Summary,
-        _latency: &dyn StatsView,
-        _requests: &dyn StatsView,
+        _latency: Arc<dyn StatsView>,
+        _requests: Arc<dyn StatsView>,
     ) -> Result<(), EngineError> {
         Ok(())
     }

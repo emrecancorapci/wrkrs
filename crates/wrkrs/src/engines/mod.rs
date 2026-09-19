@@ -251,7 +251,9 @@ mod stub_tests {
             reachable: vec![reachable],
         };
         let mut engine = factory(&spec()).unwrap();
-        let resolved = engine.resolve("example.test", "8080", &resolver).unwrap();
+        let resolved = engine
+            .resolve("example.test", "8080", Arc::new(resolver))
+            .unwrap();
         assert_eq!(resolved, vec![reachable]);
     }
 
