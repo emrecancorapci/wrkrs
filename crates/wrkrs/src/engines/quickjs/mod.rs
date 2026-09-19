@@ -4,8 +4,15 @@
 //! the callbacks follow the Lua engine semantics, with the differences
 //! documented in ENGINES.md.
 
+use std::sync::{Arc, Mutex};
+
 use rquickjs::{Context, IntoJs, Runtime};
-use wrkrs_engine::{EngineError, ScriptSpec};
+use wrkrs_engine::{EngineError, ResolveApi, ScriptSpec};
+
+use self::address::AddressObject;
+
+/// Shared slot holding the host resolver the lookup functions use.
+type ResolverSlot = Arc<Mutex<Option<Arc<dyn ResolveApi>>>>;
 
 /// One QuickJS scripting environment driven by the host.
 pub struct QuickJSEngine {
@@ -14,6 +21,9 @@ pub struct QuickJSEngine {
     // The callbacks read this, the allow comes off with that commit.
     #[allow(dead_code)]
     context: Context,
+    // The callbacks read this, the allow comes off with that commit.
+    #[allow(dead_code)]
+    resolver: ResolverSlot,
 }
 
 impl QuickJSEngine {
@@ -22,8 +32,16 @@ impl QuickJSEngine {
         let runtime = Runtime::new().map_err(|error| EngineError::Runtime(error.to_string()))?;
         let context =
             Context::full(&runtime).map_err(|error| EngineError::Runtime(error.to_string()))?;
-        let engine = QuickJSEngine { runtime, context };
+        let engine = QuickJSEngine {
+            runtime,
+            context,
+            resolver: Arc::new(Mutex::new(None)),
+        };
         engine.with(|ctx| install_wrk(ctx, spec))?;
+        engine.with(|ctx| {
+            thread::define(ctx)?;
+            install_lookup(ctx, &engine.resolver)
+        })?;
         engine.run_script_file(spec.script.as_deref());
         Ok(engine)
     }
@@ -220,6 +238,91 @@ fn coerce_scalar(value: &rquickjs::Value<'_>) -> Result<String, rquickjs::Error>
         to: "string",
         message: Some("only scalars convert".to_owned()),
     })
+}
+
+/// Holds the shared resolver for the lookup functions on a context.
+#[rquickjs::class(rename_all = "camelCase")]
+pub(crate) struct ResolverHolder {
+    /// The engine resolver slot.
+    pub slot: ResolverSlot,
+}
+
+impl<'js> rquickjs::class::Trace<'js> for ResolverHolder {
+    fn trace<'a>(&self, _tracer: rquickjs::class::Tracer<'a, 'js>) {}
+}
+
+unsafe impl<'js> rquickjs::JsLifetime<'js> for ResolverHolder {
+    type Changed<'to> = Self;
+}
+
+#[rquickjs::methods]
+impl ResolverHolder {
+    fn lookup<'js>(
+        &self,
+        ctx: rquickjs::Ctx<'js>,
+        host: String,
+        service: String,
+    ) -> Result<rquickjs::Array<'js>, rquickjs::Error> {
+        let resolver = shared_resolver(&ctx, &self.slot)?;
+        let addresses = resolver.lookup(&host, &service).map_err(|error| {
+            rquickjs::Exception::throw_message(
+                &ctx,
+                &format!("unable to resolve {host}:{service} {error}"),
+            )
+        })?;
+        let array = rquickjs::Array::new(ctx.clone())?;
+        for (index, address) in addresses.iter().enumerate() {
+            let instance = self::address::instance(ctx.clone(), *address)?;
+            array.set(index, instance)?;
+        }
+        Ok(array)
+    }
+
+    fn connect<'js>(
+        &self,
+        ctx: rquickjs::Ctx<'js>,
+        address: rquickjs::Class<'js, AddressObject>,
+    ) -> Result<bool, rquickjs::Error> {
+        let resolver = shared_resolver(&ctx, &self.slot)?;
+        let address = address.try_borrow()?;
+        Ok(resolver.connect(&address.address))
+    }
+}
+
+/// Installs wrk.lookup and wrk.connect into the wrk object.
+///
+/// The functions read the shared resolver slot, which the host fills
+/// when resolve runs. They bind to a hidden holder instance so script
+/// calls keep the right receiver.
+fn install_lookup(ctx: &rquickjs::Ctx<'_>, slot: &ResolverSlot) -> Result<(), rquickjs::Error> {
+    rquickjs::Class::<ResolverHolder>::define(&ctx.globals())?;
+    let holder = rquickjs::Class::<ResolverHolder>::instance(
+        ctx.clone(),
+        ResolverHolder { slot: slot.clone() },
+    )?;
+    ctx.globals().set("__wrkrsHolder", holder)?;
+    ctx.eval::<(), _>(
+        "wrk.lookup = __wrkrsHolder.lookup.bind(__wrkrsHolder)\n\
+         wrk.connect = __wrkrsHolder.connect.bind(__wrkrsHolder)\n\
+         delete globalThis.__wrkrsHolder",
+    )?;
+    Ok(())
+}
+
+/// Takes the current resolver for a lookup function call.
+fn shared_resolver(
+    ctx: &rquickjs::Ctx<'_>,
+    slot: &ResolverSlot,
+) -> Result<Arc<dyn ResolveApi>, rquickjs::Error> {
+    slot.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+        .ok_or_else(|| {
+            rquickjs::Exception::throw_message(
+                ctx,
+                "wrk.lookup is not available before the run resolves",
+            )
+        })
 }
 
 #[cfg(test)]
