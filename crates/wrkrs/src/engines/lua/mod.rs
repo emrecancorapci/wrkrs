@@ -11,6 +11,11 @@ const WRK_LUA: &str = include_str!("../../../../../src/wrk.lua");
 /// Shared slot holding the host resolver the lookup functions use.
 type ResolverSlot = Arc<Mutex<Option<Arc<dyn ResolveApi>>>>;
 
+// Unused by the library until the userdata and callback commits land,
+// the allow comes off with them.
+#[allow(dead_code)]
+mod value;
+
 /// One Lua scripting environment driven by the host.
 pub struct LuaEngine {
     // Read only by tests until the trait implementation lands, the
@@ -35,14 +40,14 @@ impl LuaEngine {
             resolver: Arc::new(Mutex::new(None)),
         })
     }
+}
 
-    /// The message the scripting VM reported for an error.
-    fn vm_message(error: &mlua::Error) -> String {
-        match error {
-            mlua::Error::SyntaxError { message, .. } => message.clone(),
-            mlua::Error::RuntimeError(message) => message.clone(),
-            other => other.to_string(),
-        }
+/// The message the scripting VM reported for an error.
+pub(crate) fn vm_message(error: &mlua::Error) -> String {
+    match error {
+        mlua::Error::SyntaxError { message, .. } => message.clone(),
+        mlua::Error::RuntimeError(message) => message.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -62,29 +67,29 @@ fn install_wrk_table(lua: &Lua, spec: &ScriptSpec) -> Result<(), EngineError> {
     let wrk: Table = lua
         .load(WRK_LUA)
         .eval()
-        .map_err(|error| EngineError::Runtime(LuaEngine::vm_message(&error)))?;
+        .map_err(|error| EngineError::Runtime(vm_message(&error)))?;
     lua.globals()
         .set("wrk", wrk.clone())
-        .map_err(|error| EngineError::Runtime(LuaEngine::vm_message(&error)))?;
+        .map_err(|error| EngineError::Runtime(vm_message(&error)))?;
 
     // The URL parts overwrite the wrk.lua defaults the way script.c
     // does: absent parts become nil, path always carries a value.
     wrk.set("scheme", spec.parts.scheme.clone())
-        .map_err(|error| EngineError::Runtime(LuaEngine::vm_message(&error)))?;
+        .map_err(|error| EngineError::Runtime(vm_message(&error)))?;
     wrk.set("host", spec.parts.host.clone())
-        .map_err(|error| EngineError::Runtime(LuaEngine::vm_message(&error)))?;
+        .map_err(|error| EngineError::Runtime(vm_message(&error)))?;
     wrk.set("port", spec.parts.port.clone())
-        .map_err(|error| EngineError::Runtime(LuaEngine::vm_message(&error)))?;
+        .map_err(|error| EngineError::Runtime(vm_message(&error)))?;
     wrk.set("path", spec.parts.path.clone())
-        .map_err(|error| EngineError::Runtime(LuaEngine::vm_message(&error)))?;
+        .map_err(|error| EngineError::Runtime(vm_message(&error)))?;
 
     let headers: Table = wrk
         .get("headers")
-        .map_err(|error| EngineError::Runtime(LuaEngine::vm_message(&error)))?;
+        .map_err(|error| EngineError::Runtime(vm_message(&error)))?;
     for (name, value) in &spec.headers {
         headers
             .raw_set(name.clone(), value.clone())
-            .map_err(|error| EngineError::Runtime(LuaEngine::vm_message(&error)))?;
+            .map_err(|error| EngineError::Runtime(vm_message(&error)))?;
     }
     Ok(())
 }
@@ -106,7 +111,7 @@ fn run_script_file(lua: &Lua, script: Option<&Path>) {
         ))),
     };
     if let Err(error) = &outcome {
-        eprintln!("{}: {}", path.display(), LuaEngine::vm_message(error));
+        eprintln!("{}: {}", path.display(), vm_message(error));
     }
 }
 
