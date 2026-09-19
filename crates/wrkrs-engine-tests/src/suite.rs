@@ -43,7 +43,49 @@ pub struct Scripts {
 /// the unprotected C call does, so that path stays outside the suite.
 pub fn run(name: &str, make: MakeEngine, scripts: &Scripts) {
     default_request(name, make);
-    let _ = scripts;
+    post(name, make, scripts.post);
+}
+
+/// A script that changes the method, headers, and body produces the
+/// matching request bytes.
+///
+/// Header order follows the scripting VM, so the case compares the
+/// header set rather than the sequence.
+fn post(name: &str, make: MakeEngine, script: &str) {
+    let mut engine = engine_for(name, make, "post", Some(script));
+    engine
+        .init(Arc::new(FakeThread::default()), &[])
+        .unwrap_or_else(|error| panic!("{name}: init failed: {error}"));
+    let request = engine
+        .request()
+        .unwrap_or_else(|error| panic!("{name}: request failed: {error}"));
+    let host = host_header("example.test", Some("8080"));
+    let expected = format_request(
+        "POST",
+        "/some/path",
+        &[("Content-Type".to_owned(), "text/plain".to_owned())],
+        Some(b"hello".as_slice()),
+        Some(&host),
+    );
+    assert_eq!(
+        request_parts(&request),
+        request_parts(&expected),
+        "{name}: post request mismatch"
+    );
+}
+
+/// Splits a request into its request line, sorted header lines, and
+/// body so header order does not affect comparison.
+fn request_parts(request: &[u8]) -> (String, Vec<String>, Vec<u8>) {
+    let text = String::from_utf8_lossy(request);
+    let (head, body) = text
+        .split_once("\r\n\r\n")
+        .unwrap_or_else(|| panic!("request has no header terminator: {text:?}"));
+    let mut lines = head.split("\r\n");
+    let request_line = lines.next().unwrap_or_default().to_owned();
+    let mut headers: Vec<String> = lines.map(str::to_owned).collect();
+    headers.sort();
+    (request_line, headers, body.as_bytes().to_vec())
 }
 
 /// Builds an engine for a script source.
