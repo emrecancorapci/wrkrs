@@ -20,6 +20,8 @@ const WRK_LUA: &str = include_str!("../../../../../src/wrk.lua");
 /// Shared slot holding the host resolver the lookup functions use.
 type ResolverSlot = Arc<Mutex<Option<Arc<dyn ResolveApi>>>>;
 
+#[cfg(test)]
+mod conformance;
 mod stats;
 mod thread;
 mod value;
