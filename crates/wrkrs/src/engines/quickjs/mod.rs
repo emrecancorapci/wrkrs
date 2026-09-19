@@ -184,6 +184,8 @@ fn format_request_js<'js>(
 #[allow(dead_code)]
 mod address;
 #[allow(dead_code)]
+mod stats;
+#[allow(dead_code)]
 mod thread;
 #[allow(dead_code)]
 mod value;
