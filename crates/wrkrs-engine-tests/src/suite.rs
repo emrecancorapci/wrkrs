@@ -53,6 +53,36 @@ pub fn run(name: &str, make: MakeEngine, scripts: &Scripts) {
     response(name, make, scripts.response_capture);
     done(name, make, scripts.done_capture);
     setup_and_init(name, make, scripts);
+    capabilities(name, make, scripts.full);
+}
+
+/// Capabilities must reflect what the loaded script defines.
+fn capabilities(name: &str, make: MakeEngine, script: &str) {
+    let mut engine = engine_for(name, make, "caps-default", None);
+    engine
+        .init(Arc::new(FakeThread::default()), &[])
+        .unwrap_or_else(|error| panic!("{name}: init failed: {error}"));
+    let reported = engine.capabilities();
+    assert!(reported.is_static, "{name}: default must be static");
+    assert!(
+        !reported.wants_response,
+        "{name}: default wants no response"
+    );
+    assert!(!reported.has_delay, "{name}: default has no delay");
+    assert!(!reported.has_done, "{name}: default has no done");
+
+    let mut engine = engine_for(name, make, "caps-full", Some(script));
+    engine
+        .init(Arc::new(FakeThread::default()), &[])
+        .unwrap_or_else(|error| panic!("{name}: init failed: {error}"));
+    let reported = engine.capabilities();
+    assert!(!reported.is_static, "{name}: request global means dynamic");
+    assert!(
+        reported.wants_response,
+        "{name}: response global must report"
+    );
+    assert!(reported.has_delay, "{name}: delay global must report");
+    assert!(reported.has_done, "{name}: done global must report");
 }
 
 /// Setup and init wire the thread: values transfer in, the first
