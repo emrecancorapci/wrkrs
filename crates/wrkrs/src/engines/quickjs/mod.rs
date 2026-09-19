@@ -82,8 +82,83 @@ fn install_wrk(ctx: &rquickjs::Ctx<'_>, spec: &ScriptSpec) -> Result<(), rquickj
     wrk.set("headers", headers)?;
     wrk.set("body", rquickjs::Value::new_null(ctx.clone()))?;
     wrk.set("thread", rquickjs::Value::new_null(ctx.clone()))?;
+
+    let format = rquickjs::Function::new(ctx.clone(), format_request_js)?;
+    wrk.set("format", format)?;
     ctx.globals().set("wrk", wrk)?;
     Ok(())
+}
+
+/// Backs wrk.format with the core formatter.
+///
+/// Mirrors the wrk.lua mutations: a missing Host comes from the default
+/// headers and Content-Length lands on the passed headers object, or is
+/// removed when no body is given.
+fn format_request_js<'js>(
+    ctx: rquickjs::Ctx<'js>,
+    method: rquickjs::function::Opt<Option<String>>,
+    path: rquickjs::function::Opt<Option<String>>,
+    headers: rquickjs::function::Opt<Option<rquickjs::Object<'js>>>,
+    body: rquickjs::function::Opt<Option<String>>,
+) -> Result<String, rquickjs::Error> {
+    let wrk: rquickjs::Object = ctx.globals().get("wrk")?;
+    let default_headers: rquickjs::Object = wrk.get("headers")?;
+    let headers = match headers.0 {
+        Some(Some(headers)) => headers,
+        _ => default_headers.clone(),
+    };
+
+    // A missing or null argument means the wrk default, matching the
+    // or-fallbacks of wrk.lua.
+    let method = match method.0.flatten() {
+        Some(method) => method,
+        None => wrk.get("method")?,
+    };
+    let path = match path.0.flatten() {
+        Some(path) => path,
+        None => wrk.get("path")?,
+    };
+    let body = match body.0.flatten() {
+        Some(body) => Some(body),
+        None => wrk.get("body")?,
+    };
+
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for key in headers.keys::<String>() {
+        let key = key?;
+        let value: rquickjs::Value = headers.get(key.as_str())?;
+        pairs.push((key, coerce_scalar(&value)?));
+    }
+    let default_host: Option<String> = default_headers
+        .get::<_, rquickjs::Value>("Host")
+        .ok()
+        .and_then(|value| coerce_scalar(&value).ok());
+    let has_host = pairs.iter().any(|(name, _)| name == "Host");
+
+    let request = wrkrs_engine::format_request(
+        &method,
+        &path,
+        &pairs,
+        body.as_deref().map(str::as_bytes),
+        default_host.as_deref(),
+    );
+
+    // Write the changes back the way wrk.lua mutates its tables.
+    if !has_host && let Some(host) = default_host {
+        headers.set("Host", host)?;
+    }
+    match &body {
+        Some(body) => headers.set("Content-Length", body.len())?,
+        None => {
+            let _ = headers.remove("Content-Length");
+        }
+    }
+
+    String::from_utf8(request).map_err(|error| rquickjs::Error::FromJs {
+        from: "request",
+        to: "string",
+        message: Some(error.to_string()),
+    })
 }
 
 /// Presents an absent part as null, matching the Lua nil.
@@ -95,6 +170,27 @@ fn part_value<'js>(
         Some(value) => value.clone().into_js(ctx),
         None => Ok(rquickjs::Value::new_null(ctx.clone())),
     }
+}
+
+/// Coerces a scalar header value to a string the way Lua's %s does.
+fn coerce_scalar(value: &rquickjs::Value<'_>) -> Result<String, rquickjs::Error> {
+    if let Some(string) = value.as_string() {
+        return string.to_string();
+    }
+    if let Some(int) = value.as_int() {
+        return Ok(int.to_string());
+    }
+    if let Some(float) = value.as_float() {
+        return Ok(float.to_string());
+    }
+    if let Some(boolean) = value.as_bool() {
+        return Ok(boolean.to_string());
+    }
+    Err(rquickjs::Error::FromJs {
+        from: "value",
+        to: "string",
+        message: Some("only scalars convert".to_owned()),
+    })
 }
 
 #[cfg(test)]
@@ -138,5 +234,68 @@ mod tests {
         let engine = QuickJSEngine::new(&given).unwrap();
         let accept: String = engine.with(|ctx| ctx.eval("wrk.headers.Accept")).unwrap();
         assert_eq!(accept, "application/json");
+    }
+
+    #[test]
+    fn format_matches_the_core_formatter() {
+        let engine = QuickJSEngine::new(&spec(None)).unwrap();
+        engine
+            .with(|ctx| ctx.eval::<(), _>("wrk.headers.Host = \"example.test:8080\""))
+            .unwrap();
+        let request: String = engine.with(|ctx| ctx.eval("wrk.format()")).unwrap();
+        assert_eq!(
+            request,
+            "GET /some/path HTTP/1.1\r\nHost: example.test:8080\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn format_takes_method_path_headers_and_body() {
+        let engine = QuickJSEngine::new(&spec(None)).unwrap();
+        let request: String = engine
+            .with(|ctx| {
+                ctx.eval(
+                    "wrk.format(\"POST\", \"/x\", \
+                     {\"Content-Type\": \"text/plain\"}, \"hi\")",
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            request,
+            "POST /x HTTP/1.1\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nhi"
+        );
+    }
+
+    #[test]
+    fn format_writes_host_and_length_back() {
+        let engine = QuickJSEngine::new(&spec(None)).unwrap();
+        engine
+            .with(|ctx| ctx.eval::<(), _>("wrk.headers.Host = \"example.test:8080\""))
+            .unwrap();
+        let written: String = engine
+            .with(|ctx| {
+                ctx.eval(
+                    "let h = {}\n\
+                     wrk.format(\"POST\", \"/\", h, \"xx\");\n\
+                     [h.Host, h[\"Content-Length\"]].join(\"|\")",
+                )
+            })
+            .unwrap();
+        assert_eq!(written, "example.test:8080|2");
+    }
+
+    #[test]
+    fn format_removes_length_without_a_body() {
+        let engine = QuickJSEngine::new(&spec(None)).unwrap();
+        let removed: bool = engine
+            .with(|ctx| {
+                ctx.eval(
+                    "let h = {\"Content-Length\": 9}\n\
+                     wrk.format(\"GET\", \"/\", h, null)\n\
+                     !(\"Content-Length\" in h)",
+                )
+            })
+            .unwrap();
+        assert!(removed);
     }
 }
