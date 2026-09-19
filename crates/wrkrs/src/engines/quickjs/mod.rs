@@ -575,8 +575,8 @@ fn request_bytes(value: &rquickjs::Value<'_>) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::QuickJSEngine;
-    use crate::engines::test_support::spec;
     use wrkrs_engine::Value;
+    use wrkrs_engine_tests::fixtures::spec;
 
     #[test]
     fn evaluates_javascript() {
@@ -732,8 +732,8 @@ mod tests {
     fn resolve_filters_unreachable_addresses() {
         use std::sync::Arc;
 
-        use crate::engines::test_support::{FakeResolver, address};
         use wrkrs_engine::ScriptEngine;
+        use wrkrs_engine_tests::fixtures::{FakeResolver, address};
 
         let mut engine = QuickJSEngine::new(&spec(None)).unwrap();
         let resolved = engine
@@ -746,8 +746,8 @@ mod tests {
     fn resolve_reports_lookup_failures() {
         use std::sync::Arc;
 
-        use crate::engines::test_support::FailingResolver;
         use wrkrs_engine::ScriptEngine;
+        use wrkrs_engine_tests::fixtures::FailingResolver;
 
         let mut engine = QuickJSEngine::new(&spec(None)).unwrap();
         let error = engine
@@ -763,8 +763,8 @@ mod tests {
     fn setup_assigns_the_address_and_calls_the_script() {
         use std::sync::Arc;
 
-        use crate::engines::test_support::{FakeResolver, FakeThread, address};
         use wrkrs_engine::{ScriptEngine, ThreadApi, Value};
+        use wrkrs_engine_tests::fixtures::{FakeResolver, FakeThread, address};
 
         let path = std::env::temp_dir().join("wrkrs-quickjs-setup");
         std::fs::write(&path, "function setup(thread) { thread.set(\"id\", 7) }\n")
@@ -783,8 +783,8 @@ mod tests {
     fn init_sets_the_thread_the_host_and_the_args() {
         use std::sync::Arc;
 
-        use crate::engines::test_support::FakeThread;
         use wrkrs_engine::ScriptEngine;
+        use wrkrs_engine_tests::fixtures::FakeThread;
 
         let path = std::env::temp_dir().join("wrkrs-quickjs-init");
         std::fs::write(
@@ -811,8 +811,8 @@ mod tests {
     fn default_request_matches_the_core_formatter() {
         use std::sync::Arc;
 
-        use crate::engines::test_support::FakeThread;
         use wrkrs_engine::{ScriptEngine, format_request, host_header};
+        use wrkrs_engine_tests::fixtures::FakeThread;
 
         let mut engine = QuickJSEngine::new(&spec(None)).unwrap();
         engine.init(Arc::new(FakeThread::default()), &[]).unwrap();
@@ -826,8 +826,8 @@ mod tests {
     fn delay_returns_the_script_value() {
         use std::sync::Arc;
 
-        use crate::engines::test_support::FakeThread;
         use wrkrs_engine::ScriptEngine;
+        use wrkrs_engine_tests::fixtures::FakeThread;
 
         let path = std::env::temp_dir().join("wrkrs-quickjs-delay");
         std::fs::write(&path, "function delay() { return 42 }\n").expect("write temporary script");
@@ -840,8 +840,8 @@ mod tests {
     fn response_delivers_status_headers_and_body() {
         use std::sync::Arc;
 
-        use crate::engines::test_support::FakeThread;
         use wrkrs_engine::ScriptEngine;
+        use wrkrs_engine_tests::fixtures::FakeThread;
 
         let path = std::env::temp_dir().join("wrkrs-quickjs-response");
         std::fs::write(
@@ -875,8 +875,8 @@ mod tests {
     fn done_receives_summary_and_stats() {
         use std::sync::Arc;
 
-        use crate::engines::test_support::{FakeStats, FakeThread};
         use wrkrs_engine::{ErrorCounts, ScriptEngine, Summary};
+        use wrkrs_engine_tests::fixtures::{FakeStats, FakeThread};
 
         let path = std::env::temp_dir().join("wrkrs-quickjs-done");
         std::fs::write(
@@ -919,8 +919,8 @@ mod tests {
     fn capabilities_reflect_the_loaded_script() {
         use std::sync::Arc;
 
-        use crate::engines::test_support::FakeThread;
         use wrkrs_engine::ScriptEngine;
+        use wrkrs_engine_tests::fixtures::FakeThread;
 
         let mut engine = QuickJSEngine::new(&spec(None)).unwrap();
         engine.init(Arc::new(FakeThread::default()), &[]).unwrap();

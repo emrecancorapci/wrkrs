@@ -93,7 +93,7 @@ mod tests {
     use rquickjs::{Context, Runtime};
 
     use super::instance;
-    use crate::engines::test_support::FakeStats;
+    use wrkrs_engine_tests::fixtures::FakeStats;
 
     fn stats_global(context: &Context) {
         context

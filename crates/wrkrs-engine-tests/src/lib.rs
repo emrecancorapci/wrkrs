@@ -1,4 +1,10 @@
-//! Engine-agnostic conformance suite for wrkrs scripting engines.
+//! Engine conformance suite for wrkrs scripting engines.
 //!
-//! Every engine implementation runs the same cases against the contract in
-//! `wrkrs-engine` so observable behavior stays identical across languages.
+//! Defines the language specific script sources and the assertions
+//! every engine must satisfy, plus the host fixtures the suite and the
+//! engine unit tests share.
+
+pub mod fixtures;
+pub mod suite;
+
+pub use suite::{MakeEngine, Scripts, run};

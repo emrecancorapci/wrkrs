@@ -20,5 +20,8 @@ rquickjs = { version = "=0.14.0", optional = true, features = ["parallel", "clas
 thiserror = "2.0.20"
 wrkrs-engine.workspace = true
 
+[dev-dependencies]
+wrkrs-engine-tests = { path = "../wrkrs-engine-tests" }
+
 [lints]
 workspace = true

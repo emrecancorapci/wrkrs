@@ -1,9 +1,9 @@
-//! Shared fakes and fixtures for the engine tests.
+//! Host fixtures shared by the conformance suite and engine tests.
 
 use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use wrkrs_engine::{EngineError, ResolveApi, ScriptSpec, StatsView, ThreadApi, UrlRef, Value};
@@ -23,6 +23,15 @@ pub fn spec(script: Option<&Path>) -> ScriptSpec {
     }
 }
 
+/// Writes a script source to a temporary file and returns its path.
+pub fn temp_script(name: &str, source: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("wrkrs-conformance-{name}"));
+    // A failure here means the test environment cannot write its
+    // temporary directory, which the test cannot work around.
+    std::fs::write(&path, source).expect("write temporary script");
+    path
+}
+
 /// Records thread state the way the host would.
 #[derive(Default)]
 pub struct FakeThread {
@@ -32,6 +41,7 @@ pub struct FakeThread {
 }
 
 impl FakeThread {
+    /// Whether stop was called.
     pub fn stopped(&self) -> bool {
         *self.stopped.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -71,6 +81,7 @@ impl ThreadApi for FakeThread {
 
 /// Resolves a fixed address list with a configurable reachable set.
 pub struct FakeResolver {
+    /// The addresses that accept a connection probe.
     pub reachable: Vec<SocketAddr>,
 }
 
@@ -105,7 +116,7 @@ impl ResolveApi for FailingResolver {
     }
 }
 
-/// Fixed statistics for the done callback tests.
+/// Fixed statistics for the done callback.
 pub struct FakeStats;
 
 impl StatsView for FakeStats {

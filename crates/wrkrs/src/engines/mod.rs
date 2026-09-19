@@ -9,9 +9,6 @@ pub mod quickjs;
 #[cfg(feature = "engine-stub")]
 pub mod stub;
 
-#[cfg(test)]
-pub(crate) mod test_support;
-
 /// Engine names this project ships, used to add rebuild hints.
 const PROJECT_ENGINES: &[&str] = &["luajit", "lua54", "quickjs", "stub"];
 

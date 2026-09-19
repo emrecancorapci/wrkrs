@@ -95,8 +95,8 @@ mod tests {
     use rquickjs::{Context, Runtime};
 
     use super::{define, instance};
-    use crate::engines::test_support::FakeThread;
     use wrkrs_engine::ThreadApi;
+    use wrkrs_engine_tests::fixtures::FakeThread;
 
     fn thread_global(context: &Context, api: Arc<FakeThread>) {
         context

@@ -109,8 +109,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::{Address, ThreadHandle};
-    use crate::engines::test_support::FakeThread;
     use wrkrs_engine::{ThreadApi, Value};
+    use wrkrs_engine_tests::fixtures::FakeThread;
 
     fn thread_global(lua: &mlua::Lua, api: Arc<FakeThread>) {
         let userdata = lua.create_userdata(ThreadHandle(api)).unwrap();

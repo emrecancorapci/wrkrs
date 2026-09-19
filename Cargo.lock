@@ -455,6 +455,7 @@ dependencies = [
  "rquickjs",
  "thiserror",
  "wrkrs-engine",
+ "wrkrs-engine-tests",
 ]
 
 [[package]]

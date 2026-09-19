@@ -54,7 +54,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::StatsHandle;
-    use crate::engines::test_support::FakeStats;
+    use wrkrs_engine_tests::fixtures::FakeStats;
 
     fn stats_global(lua: &mlua::Lua) {
         let userdata = lua
