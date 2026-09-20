@@ -416,6 +416,69 @@ mod tests {
         assert_eq!(view.value_at(1), (7, 2));
     }
 
+    /// Renders a dump in the exact shape of tools/golden_stats.c.
+    fn golden_dump(label: &str, histogram: &Histogram) -> String {
+        let mut out = format!("{} count={}\n", label, histogram.count());
+        out += &format!(
+            "{} min={} max={}\n",
+            label,
+            histogram.min(),
+            histogram.max()
+        );
+        let mean = histogram.mean();
+        let stdev = histogram.stdev();
+        out += &format!("{label} mean={mean:.6}\n");
+        out += &format!("{label} stdev={stdev:.6}\n");
+        out += &format!(
+            "{label} within={:.6}\n",
+            histogram.within_stdev(mean, stdev, 1)
+        );
+        for (name, percentile) in [
+            ("0", 0.0),
+            ("25", 25.0),
+            ("50", 50.0),
+            ("75", 75.0),
+            ("90", 90.0),
+            ("99", 99.0),
+            ("99.9", 99.9),
+            ("100", 100.0),
+        ] {
+            out += &format!("{label} p{name}={}\n", histogram.percentile(percentile));
+        }
+        let occupied = histogram.popcount();
+        out += &format!("{label} popcount={occupied}\n");
+        for slot in 0..=occupied {
+            let (value, count) = histogram.value_at(slot);
+            out += &format!("{label} value_at({slot})={value}:{count}\n");
+        }
+        out
+    }
+
+    /// Byte parity against the C stats implementation. Regenerate the
+    /// fixture with tools/golden_stats.c when the scenario changes.
+    #[test]
+    fn matches_the_c_implementation() {
+        let histogram = Histogram::new(200);
+        let values = [1u64, 5, 5, 10, 13, 13, 13, 40, 67, 128, 200, 4, 4];
+        let mut rejected = 0;
+        for value in values {
+            if !histogram.record(value) {
+                rejected += 1;
+            }
+        }
+        if !histogram.record(201) {
+            rejected += 1;
+        }
+
+        let mut out = format!("rejected={rejected}\n");
+        out += &golden_dump("before", &histogram);
+        histogram.correct(10);
+        out += &golden_dump("after", &histogram);
+
+        let golden = include_str!("../../../tools/golden_stats.txt");
+        assert_eq!(out, golden);
+    }
+
     #[test]
     fn concurrent_recording_keeps_the_count() {
         let histogram = Arc::new(Histogram::new(10_000));
