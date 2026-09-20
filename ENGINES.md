@@ -48,3 +48,61 @@ Lua runtime per binary and the runtimes export clashing symbols. Building
 with both fails with a `compile_error!` that says so. Both Lua builds run
 the same engine implementation and the same conformance suite, and `.lua`
 dispatches to whichever Lua runtime the build carries.
+
+## Lua engines
+
+The `SCRIPTING` document stays normative for the Lua API and every script
+in `scripts/*.lua` runs unmodified. The default environment is embedded
+verbatim from `src/wrk.lua`, so table iteration order and the
+`wrk.format` mutation quirks are identical to wrk.
+
+Preserved quirks worth knowing:
+
+- Script arguments arrive in `args[0]`, `args[1]`, ... (wrk fills the
+  table from index zero).
+- A script that fails to load prints `<file>: <error>` on stderr and the
+  run continues with the default request.
+- Header order in generated requests follows Lua table hashing, exactly
+  like wrk. Scripts that need a fixed order build the header list
+  themselves.
+- Both Lua builds map numbers through the same value transfer rules as
+  wrk's `script_copy_value`.
+
+## JavaScript engine
+
+QuickJS implements the same surface with JavaScript shapes. The examples
+in `scripts/*.js` cover the same cases as the Lua examples.
+
+The `wrk` object carries `scheme`, `host`, `port`, `method`, `path`,
+`headers`, `body`, and `thread`, plus `wrk.format`, `wrk.lookup`, and
+`wrk.connect`. The optional globals are `setup(thread)`, `init(args)`,
+`delay()`, `request()`, `response(status, headers, body)`, and
+`done(summary, latency, requests)`. The thread object exposes `addr`
+(read and write), `get(name)`, `set(name, value)`, and `stop()`. The
+stats objects expose `min`, `max`, `mean`, `stdev`, `length`, the
+`percentile(p)` method, and `call(i)` returning `[value, count]` — the
+JavaScript shape of the Lua call operator. A `print` function writes a
+line to stdout.
+
+Differences from the Lua engines:
+
+- Assigning an undeclared global throws. Declare script state with
+  `var` or `let` at the top level.
+- Response bodies arrive as strings. Bytes that are not valid UTF-8
+  become replacement characters.
+- Header order in generated requests follows JavaScript property
+  insertion order.
+- Each engine instance caps its heap at 256 MiB and its stack at
+  1 MiB, so a runaway script fails its call instead of the process.
+
+## Performance guidance
+
+Script callbacks run on the request path. The cheapest script is a
+static one: build the request once in `init` and return it from
+`request`, which lets the runner cache the bytes. Building a fresh
+request per call costs allocation and formatting time on every request.
+
+LuaJIT executes callbacks in well under a microsecond. QuickJS is an
+interpreter and pays several times that per callback, so per-request
+work caps throughput noticeably at high request rates. Prefer static
+requests under QuickJS, or keep `request` to a precomputed lookup.
