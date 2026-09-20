@@ -203,11 +203,18 @@ fn usage() -> Outcome {
 
 /// The version line, printed before the copyright notice.
 pub fn version_line() -> String {
+    // wrk prints the backend and the copyright on one line, the
+    // trailing space of its first printf is the separator.
     format!(
-        "wrkrs {} [{}]",
-        env!("CARGO_PKG_VERSION"),
+        "wrkrs {} [{}] Copyright (C) 2012 Will Glozer",
+        version(),
         crate::backend::NAME
     )
+}
+
+/// The build version from git describe with a crate fallback.
+fn version() -> &'static str {
+    option_env!("WRKRS_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
 /// Prints the usage text.
