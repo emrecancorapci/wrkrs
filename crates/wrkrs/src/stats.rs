@@ -92,6 +92,57 @@ impl Histogram {
         0
     }
 
+    /// The arithmetic mean of the recorded values.
+    ///
+    /// The sum accumulates in wrapping u64 the way C does.
+    pub fn mean(&self) -> f64 {
+        let count = self.count();
+        if count == 0 {
+            return 0.0;
+        }
+        let mut sum = 0u64;
+        for index in self.min()..=self.max() {
+            sum = sum.wrapping_add(self.bucket(index).wrapping_mul(index));
+        }
+        sum as f64 / count as f64
+    }
+
+    /// The sample standard deviation of the recorded values.
+    ///
+    /// Aggregation runs in f64 where C uses long double, the
+    /// documented deviation.
+    pub fn stdev(&self) -> f64 {
+        let count = self.count();
+        if count < 2 {
+            return 0.0;
+        }
+        let mean = self.mean();
+        let mut sum = 0.0;
+        for index in self.min()..=self.max() {
+            let bucket = self.bucket(index);
+            if bucket != 0 {
+                sum += (index as f64 - mean).powi(2) * bucket as f64;
+            }
+        }
+        (sum / (count - 1) as f64).sqrt()
+    }
+
+    /// The percentage of values within `n` standard deviations.
+    ///
+    /// An empty histogram divides zero by zero and answers NaN, the C
+    /// behavior included.
+    pub fn within_stdev(&self, mean: f64, stdev: f64, n: u64) -> f64 {
+        let upper = mean + stdev * n as f64;
+        let lower = mean - stdev * n as f64;
+        let mut sum = 0u64;
+        for index in self.min()..=self.max() {
+            if index as f64 >= lower && index as f64 <= upper {
+                sum += self.bucket(index);
+            }
+        }
+        (sum as f64 / self.count() as f64) * 100.0
+    }
+
     /// The number of buckets that hold values.
     pub fn popcount(&self) -> u64 {
         let mut count = 0;
@@ -214,6 +265,44 @@ mod tests {
         assert_eq!(histogram.value_at(2), (9, 1));
         // Past the end the count carries the occupied total.
         assert_eq!(histogram.value_at(3), (0, 3));
+    }
+
+    #[test]
+    fn mean_and_stdev_match_hand_computation() {
+        let histogram = loaded();
+        // sum = 3*3 + 7*2 + 9 = 32, mean = 32/6
+        assert!((histogram.mean() - 32.0 / 6.0).abs() < 1e-12);
+        let mean = histogram.mean();
+        let expected = ((3.0 * (3.0 - mean) * (3.0 - mean)
+            + 2.0 * (7.0 - mean) * (7.0 - mean)
+            + (9.0 - mean) * (9.0 - mean))
+            / 5.0)
+            .sqrt();
+        assert!((histogram.stdev() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn single_values_carry_no_stdev() {
+        let histogram = Histogram::new(10);
+        histogram.record(4);
+        assert_eq!(histogram.mean(), 4.0);
+        assert_eq!(histogram.stdev(), 0.0);
+    }
+
+    #[test]
+    fn within_stdev_shares_the_middle() {
+        let histogram = loaded();
+        let mean = histogram.mean();
+        let stdev = histogram.stdev();
+        // Buckets 3 and 7 fall inside one stdev, 9 stays out.
+        let expected = 5.0 / 6.0 * 100.0;
+        assert!((histogram.within_stdev(mean, stdev, 1) - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_empty_histogram_shares_nan() {
+        let histogram = Histogram::new(10);
+        assert!(histogram.within_stdev(0.0, 0.0, 1).is_nan());
     }
 
     #[test]
