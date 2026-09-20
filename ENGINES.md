@@ -106,3 +106,64 @@ LuaJIT executes callbacks in well under a microsecond. QuickJS is an
 interpreter and pays several times that per callback, so per-request
 work caps throughput noticeably at high request rates. Prefer static
 requests under QuickJS, or keep `request` to a precomputed lookup.
+
+## Implementing an engine
+
+Engines implement the `ScriptEngine` trait from the `wrkrs-engine` crate,
+which also carries the host services an engine consumes:
+
+- `ScriptSpec` and `UrlRef` describe one scripting environment
+- `ResolveApi` backs `wrk.lookup` and `wrk.connect`
+- `ThreadApi` backs the thread object (`addr`, `get`, `set`, `stop`)
+- `StatsView` backs the stats objects handed to `done`
+- `Value` is the restricted cross-environment copy type
+- `Capabilities` tells the runner what the script needs
+
+A minimal engine looks like this:
+
+```rust
+use wrkrs_engine::{EngineError, ScriptEngine, ScriptSpec};
+
+pub struct MyEngine { /* the VM */ }
+
+impl ScriptEngine for MyEngine {
+    fn create(spec: &ScriptSpec) -> Result<Self, EngineError>
+    where Self: Sized {
+        // build the VM, install the wrk table, run the script file
+        todo!("build the environment")
+    }
+
+    // resolve, setup, init, delay, request, response, done,
+    // capabilities, get_global, set_global follow
+}
+```
+
+Engines must be `Send` because the runner moves one environment per
+thread into its worker. Host services arrive as `Arc` handles since
+scripts keep the objects past the callback that delivered them.
+
+The conformance suite in `wrkrs-engine-tests` drives any engine through
+the observable contract: request bytes, callback wiring, value transfer
+rules, capability honesty, and error propagation. Point the suite at
+your factory with your language's script sources and a green run is the
+compatibility bar.
+
+Registration is compile time in v1: add an `EngineEntry` to the
+registry table with the name, extensions, description, and factory, then
+ship your own binary. Runtime loading is deliberately out of scope for
+now, the trait keeps it additive.
+
+```rust
+// crates/wrkrs/src/engines/mod.rs
+pub fn engines() -> &'static [EngineEntry] {
+    &[
+        // ...
+        EngineEntry {
+            name: "mylang",
+            extensions: &["my"],
+            description: "My language engine",
+            factory: mylang::factory,
+        },
+    ]
+}
+```
