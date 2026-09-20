@@ -2,13 +2,107 @@
 //! setup, and the thread zero probes.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use wrkrs_engine::ScriptSpec;
-use wrkrs_engine::{EngineError, ScriptEngine, ThreadApi, Value};
+use wrkrs_engine::{Capabilities, EngineError, ScriptEngine, ThreadApi, Value};
 
 use crate::cli::Config;
+use crate::engines::EngineEntry;
+use crate::parser::verify_request;
+use crate::resolve::SystemResolver;
+
+/// Everything the run loop needs after preparation.
+pub struct Prepared {
+    /// Requests per pipeline from the thread zero probe.
+    pub pipeline: u64,
+    /// What the loaded script demands from the run loop.
+    pub capabilities: Capabilities,
+    /// One handle per thread, the engines parked inside.
+    pub threads: Vec<Arc<HostThread>>,
+    /// The reachable addresses in resolver order.
+    pub addresses: Vec<SocketAddr>,
+}
+
+/// A preparation failure, printed to stderr with exit one.
+#[derive(Debug)]
+pub struct PrepareError(String);
+
+impl PrepareError {
+    /// The message to print.
+    pub fn message(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Prepares a run: resolution, thread setup, and the thread zero
+/// probes.
+///
+/// Mirrors the wrk main flow up to the point where threads spawn.
+/// Resolution failures and unreachable targets keep the wrk messages,
+/// script callback errors surface where C aborts through its
+/// unprotected calls.
+pub fn prepare(config: &Config, entry: &EngineEntry) -> Result<Prepared, PrepareError> {
+    let spec = build_spec(config);
+    let resolver = Arc::new(SystemResolver::new());
+
+    let mut main = (entry.factory)(&spec).map_err(|error| PrepareError(error.to_string()))?;
+
+    // wrk resolves the host against the port or the scheme name.
+    let host = config.parts.host.clone().unwrap_or_default();
+    let service = config
+        .parts
+        .port
+        .clone()
+        .or_else(|| config.parts.scheme.clone())
+        .unwrap_or_default();
+    let addresses = main
+        .resolve(&host, &service, resolver.clone())
+        .map_err(|error| PrepareError(error.raw_message().to_owned()))?;
+    if addresses.is_empty() {
+        return Err(PrepareError(format!(
+            "unable to connect to {host}:{service} {}",
+            resolver.last_connect_error()
+        )));
+    }
+
+    let mut threads = Vec::new();
+    let mut pipeline = 1;
+    let mut capabilities = Capabilities::default();
+    for index in 0..config.threads {
+        let engine = (entry.factory)(&spec).map_err(|error| PrepareError(error.to_string()))?;
+        let handle = Arc::new(HostThread::new());
+        handle.park(engine);
+
+        main.setup(handle.clone())
+            .map_err(|error| PrepareError(error.raw_message().to_owned()))?;
+
+        let mut engine = handle.take().expect("engine parked above");
+        engine
+            .init(handle.clone(), &config.init_args)
+            .map_err(|error| PrepareError(error.raw_message().to_owned()))?;
+
+        if index == 0 {
+            capabilities = engine.capabilities();
+            let request = engine
+                .request()
+                .map_err(|error| PrepareError(error.raw_message().to_owned()))?;
+            pipeline = verify_request(&request).map_err(PrepareError)?;
+        }
+
+        handle.park(engine);
+        threads.push(handle);
+    }
+
+    Ok(Prepared {
+        pipeline,
+        capabilities,
+        threads,
+        addresses,
+    })
+}
 
 /// The host side of one benchmark thread.
 ///
@@ -138,8 +232,10 @@ fn split_headers(raw: &[String]) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{HostThread, build_spec, split_headers};
+    use super::HostThread;
+    use super::{build_spec, split_headers};
     use crate::cli::Config;
+    use crate::engines::EngineEntry;
     use crate::parser::parse_url;
 
     fn config(headers: &[&str]) -> Config {
@@ -237,5 +333,85 @@ mod tests {
         let error = handle.get_global("anything").expect_err("no engine parked");
         assert_eq!(error.raw_message(), "thread engine is unavailable");
         assert!(handle.take().is_none());
+    }
+
+    #[cfg(any(feature = "engine-luajit", feature = "engine-lua54"))]
+    fn prepared_config(name: &str, url: &str, script: &str) -> (Config, &'static EngineEntry) {
+        let path = std::env::temp_dir().join(format!("wrkrs-runner-{name}.lua"));
+        std::fs::write(&path, script).expect("write temporary script");
+        let entry = crate::engines::find_by_extension("bench.lua").expect("lua engine");
+        let mut config = config(&[]);
+        config.url = url.to_owned();
+        config.parts = parse_url(url).expect("valid url");
+        config.script = Some(path);
+        config.init_args = vec![url.to_owned()];
+        (config, entry)
+    }
+
+    #[cfg(any(feature = "engine-luajit", feature = "engine-lua54"))]
+    #[test]
+    fn prepares_a_full_run() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let address = listener.local_addr().expect("local address");
+        let url = format!("http://127.0.0.1:{}/", address.port());
+        let (config, entry) = prepared_config(
+            "full",
+            &url,
+            "function request() return \"GET / HTTP/1.1\\r\\nHost: h\\r\\n\\r\\n\" end\n\
+             function response(status, headers, body) end\n\
+             function delay() return 0 end\n\
+             function done(summary, latency, requests) end\n",
+        );
+
+        let prepared = super::prepare(&config, entry).expect("preparation succeeds");
+        assert_eq!(prepared.pipeline, 1);
+        assert!(!prepared.capabilities.is_static);
+        assert!(prepared.capabilities.wants_response);
+        assert!(prepared.capabilities.has_delay);
+        assert!(prepared.capabilities.has_done);
+        assert_eq!(prepared.threads.len(), 2);
+        assert_eq!(prepared.addresses, vec![address]);
+    }
+
+    #[cfg(any(feature = "engine-luajit", feature = "engine-lua54"))]
+    #[test]
+    fn pipelined_scripts_report_their_depth() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let address = listener.local_addr().expect("local address");
+        let url = format!("http://127.0.0.1:{}/", address.port());
+        let (config, entry) = prepared_config(
+            "pipeline",
+            &url,
+            "function init(args)\n\
+             req = wrk.format(nil, \"/?foo\") .. wrk.format(nil, \"/?bar\") .. wrk.format(nil, \"/?baz\")\n\
+             end\n\
+             function request() return req end\n",
+        );
+
+        let prepared = super::prepare(&config, entry).expect("preparation succeeds");
+        assert_eq!(prepared.pipeline, 3);
+        assert!(!prepared.capabilities.is_static);
+    }
+
+    #[test]
+    fn unreachable_targets_keep_the_wrk_message() {
+        use std::net::TcpListener;
+
+        // One listening and one refused address so the resolver order
+        // survives, then probe against a port with nothing behind it.
+        let _listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let (config, entry) = prepared_config("refused", "http://127.0.0.1:1/", "");
+        let _ = entry;
+        let error = super::prepare(&config, entry)
+            .err()
+            .expect("nothing listens on port one");
+        assert_eq!(
+            error.message(),
+            "unable to connect to 127.0.0.1:1 Connection refused"
+        );
     }
 }
