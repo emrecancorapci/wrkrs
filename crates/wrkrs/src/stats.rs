@@ -70,6 +70,58 @@ impl Histogram {
         self.count.load(Ordering::Relaxed)
     }
 
+    /// The count in one bucket.
+    fn bucket(&self, index: u64) -> u64 {
+        self.data[index as usize].load(Ordering::Relaxed)
+    }
+
+    /// The value at the given percentile between 0 and 100.
+    ///
+    /// The rank rounds half away from zero after adding a half,
+    /// mirroring the C `round((p / 100.0) * count + 0.5)`. An empty
+    /// histogram answers zero.
+    pub fn percentile(&self, percentile: f64) -> u64 {
+        let rank = ((percentile / 100.0) * self.count() as f64 + 0.5).round() as u64;
+        let mut total = 0;
+        for index in self.min()..=self.max() {
+            total += self.bucket(index);
+            if total >= rank {
+                return index;
+            }
+        }
+        0
+    }
+
+    /// The number of buckets that hold values.
+    pub fn popcount(&self) -> u64 {
+        let mut count = 0;
+        for index in self.min()..=self.max() {
+            if self.bucket(index) != 0 {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// The value and its bucket count at a zero based occupied slot.
+    ///
+    /// Past the last occupied slot the C code leaves the running
+    /// occupied count in place and answers zero, preserved here.
+    pub fn value_at(&self, index: u64) -> (u64, u64) {
+        let mut count = 0;
+        for slot in self.min()..=self.max() {
+            let bucket = self.bucket(slot);
+            if bucket != 0 {
+                let seen = count;
+                count += 1;
+                if seen == index {
+                    return (slot, bucket);
+                }
+            }
+        }
+        (0, count)
+    }
+
     /// The smallest recorded value.
     pub fn min(&self) -> u64 {
         self.min.load(Ordering::Relaxed)
@@ -117,6 +169,51 @@ mod tests {
         assert!(histogram.record(0));
         assert_eq!(histogram.min(), 0);
         assert_eq!(histogram.max(), 0);
+    }
+
+    fn loaded() -> Histogram {
+        let histogram = Histogram::new(100);
+        for value in [7u64, 3, 9, 7, 3, 3] {
+            assert!(histogram.record(value));
+        }
+        histogram
+    }
+
+    #[test]
+    fn percentile_walks_the_rank() {
+        let histogram = loaded();
+        // rank = round(p / 100 * 6 + 0.5). The half bump pushes even
+        // count medians up: p=50 ranks 4 which lands on the 7 bucket.
+        assert_eq!(histogram.percentile(0.0), 3);
+        assert_eq!(histogram.percentile(50.0), 7);
+        assert_eq!(histogram.percentile(75.0), 7);
+        assert_eq!(histogram.percentile(99.0), 9);
+        // rank 7 never fills, C answers zero for the top percentile.
+        assert_eq!(histogram.percentile(100.0), 0);
+    }
+
+    #[test]
+    fn an_empty_histogram_answers_zero() {
+        let histogram = Histogram::new(100);
+        assert_eq!(histogram.percentile(99.0), 0);
+        assert_eq!(histogram.popcount(), 0);
+        assert_eq!(histogram.value_at(0), (0, 0));
+    }
+
+    #[test]
+    fn popcount_counts_occupied_buckets() {
+        let histogram = loaded();
+        assert_eq!(histogram.popcount(), 3);
+    }
+
+    #[test]
+    fn value_at_reports_slots_and_leaves_the_tail_quirk() {
+        let histogram = loaded();
+        assert_eq!(histogram.value_at(0), (3, 3));
+        assert_eq!(histogram.value_at(1), (7, 2));
+        assert_eq!(histogram.value_at(2), (9, 1));
+        // Past the end the count carries the occupied total.
+        assert_eq!(histogram.value_at(3), (0, 3));
     }
 
     #[test]
