@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod engines;
+pub mod units;
 
 #[cfg(all(feature = "engine-luajit", feature = "engine-lua54"))]
 compile_error!(
