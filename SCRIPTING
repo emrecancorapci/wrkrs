@@ -115,3 +115,9 @@ Done
       timeout = N  -- total request timeouts
     }
   }
+
+Engines
+
+  This document describes the Lua API. wrkrs also runs scripts on other
+  engines, selected by the -s file extension or with -e. See ENGINES.md
+  for the engine list, the JavaScript surface, and how to plug in more.
