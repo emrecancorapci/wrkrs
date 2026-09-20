@@ -111,6 +111,12 @@ pub fn find_by_extension(script: &str) -> Option<&'static EngineEntry> {
         .find(|entry| entry.extensions.contains(&extension))
 }
 
+/// The engine for runs without a script, the Lua engine when the
+/// build carries one, otherwise the first entry.
+pub fn default_engine() -> Option<&'static EngineEntry> {
+    find_by_extension("default.lua").or_else(|| engines().first())
+}
+
 /// Renders the engine listing printed by `-E`.
 pub fn engine_listing(entries: &[EngineEntry]) -> String {
     let mut listing = String::new();
