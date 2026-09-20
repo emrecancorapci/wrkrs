@@ -209,6 +209,36 @@ impl Histogram {
     }
 }
 
+impl wrkrs_engine::StatsView for Histogram {
+    fn min(&self) -> u64 {
+        Histogram::min(self)
+    }
+
+    fn max(&self) -> u64 {
+        Histogram::max(self)
+    }
+
+    fn mean(&self) -> f64 {
+        Histogram::mean(self)
+    }
+
+    fn stdev(&self) -> f64 {
+        Histogram::stdev(self)
+    }
+
+    fn percentile(&self, percentile: f64) -> u64 {
+        Histogram::percentile(self, percentile)
+    }
+
+    fn popcount(&self) -> u64 {
+        Histogram::popcount(self)
+    }
+
+    fn value_at(&self, slot: u64) -> (u64, u64) {
+        Histogram::value_at(self, slot)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -369,6 +399,21 @@ mod tests {
         histogram.correct(0);
         histogram.correct(-5);
         assert_eq!(histogram.count(), 1);
+    }
+
+    #[test]
+    fn the_stats_view_delegates_to_the_histogram() {
+        use std::sync::Arc;
+        use wrkrs_engine::StatsView;
+
+        let histogram = Arc::new(loaded());
+        let view: Arc<dyn StatsView> = histogram.clone();
+        assert_eq!(view.min(), 3);
+        assert_eq!(view.max(), 9);
+        assert!((view.mean() - 32.0 / 6.0).abs() < 1e-12);
+        assert_eq!(view.popcount(), 3);
+        assert_eq!(view.percentile(50.0), 7);
+        assert_eq!(view.value_at(1), (7, 2));
     }
 
     #[test]
