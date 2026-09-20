@@ -5,6 +5,7 @@ pub mod cli;
 pub mod engines;
 pub mod getopt;
 pub mod parser;
+pub mod resolve;
 pub mod runner;
 pub mod stats;
 pub mod units;

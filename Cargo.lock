@@ -458,6 +458,7 @@ name = "wrkrs"
 version = "0.1.0"
 dependencies = [
  "httparse",
+ "libc",
  "mlua",
  "rquickjs",
  "thiserror",
