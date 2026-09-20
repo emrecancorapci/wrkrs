@@ -143,6 +143,31 @@ impl Histogram {
         (sum as f64 / self.count() as f64) * 100.0
     }
 
+    /// The coordinated omission correction, mirroring stats_correct.
+    ///
+    /// Every bucket at or above twice the expected interval mirrors
+    /// its count down in interval steps while strictly above the
+    /// interval. Mirrored buckets can land below the tracked minimum
+    /// and stay invisible to the walks, matching C. A nonpositive
+    /// interval is a no-op where C would spin forever.
+    pub fn correct(&self, expected: i64) {
+        if expected <= 0 {
+            return;
+        }
+        let max = self.max();
+        let mut value = expected.wrapping_mul(2) as u64;
+        while value <= max {
+            let count = self.bucket(value);
+            let mut mirror = value as i64 - expected;
+            while count != 0 && mirror > expected {
+                self.data[mirror as usize].fetch_add(count, Ordering::Relaxed);
+                self.count.fetch_add(count, Ordering::Relaxed);
+                mirror -= expected;
+            }
+            value += 1;
+        }
+    }
+
     /// The number of buckets that hold values.
     pub fn popcount(&self) -> u64 {
         let mut count = 0;
@@ -303,6 +328,47 @@ mod tests {
     fn an_empty_histogram_shares_nan() {
         let histogram = Histogram::new(10);
         assert!(histogram.within_stdev(0.0, 0.0, 1).is_nan());
+    }
+
+    #[test]
+    fn correction_mirrors_counts_down_in_steps() {
+        let histogram = Histogram::new(200);
+        for value in [100u64, 100, 130] {
+            histogram.record(value);
+        }
+        histogram.correct(10);
+        // The 100 bucket mirrors into 90..20, the 130 bucket mirrors
+        // through 100 on its way down into 120..20, every step strictly
+        // above the interval.
+        assert_eq!(histogram.bucket(120), 1);
+        assert_eq!(histogram.bucket(100), 3);
+        assert_eq!(histogram.bucket(90), 3);
+        assert_eq!(histogram.bucket(30), 3);
+        assert_eq!(histogram.bucket(20), 3);
+        assert_eq!(histogram.bucket(10), 0);
+        assert_eq!(histogram.count(), 3 + 8 * 2 + 11);
+    }
+
+    #[test]
+    fn corrected_values_below_the_minimum_stay_invisible() {
+        let histogram = Histogram::new(200);
+        histogram.record(100);
+        histogram.correct(10);
+        // The mirrored 90..20 buckets raise the count but the walks
+        // still start at the tracked minimum of 100, so no rank fills
+        // and the percentile answers zero.
+        assert_eq!(histogram.count(), 1 + 8);
+        assert_eq!(histogram.min(), 100);
+        assert_eq!(histogram.percentile(50.0), 0);
+    }
+
+    #[test]
+    fn a_nonpositive_interval_corrects_nothing() {
+        let histogram = Histogram::new(200);
+        histogram.record(100);
+        histogram.correct(0);
+        histogram.correct(-5);
+        assert_eq!(histogram.count(), 1);
     }
 
     #[test]
