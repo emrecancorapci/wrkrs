@@ -4,8 +4,10 @@
   load when run on a single multi-core CPU. It combines a multithreaded
   design with scalable event notification systems such as epoll and kqueue.
 
-  An optional LuaJIT script can perform HTTP request generation, response
-  processing, and custom reporting. Details are available in SCRIPTING and
+  An optional script can perform HTTP request generation, response
+  processing, and custom reporting. Lua is the classic engine and
+  JavaScript is built in, selected by the script extension or the
+  `-e` flag. Details are available in SCRIPTING and ENGINES.md and
   several examples are located in [scripts/](scripts/).
 
 ## Basic Usage
@@ -35,7 +37,11 @@
 
     -t, --threads:     total number of threads to use
 
-    -s, --script:      LuaJIT script, see SCRIPTING
+    -s, --script:      LuaJIT or JavaScript script, see SCRIPTING and ENGINES.md
+
+    -e, --engine:      scripting engine, overriding the script extension
+
+    -E, --engines:     list the scripting engines compiled in
 
     -H, --header:      HTTP header to add to request, e.g. "User-Agent: wrk"
 
