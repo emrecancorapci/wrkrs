@@ -111,6 +111,25 @@ pub fn find_by_extension(script: &str) -> Option<&'static EngineEntry> {
         .find(|entry| entry.extensions.contains(&extension))
 }
 
+/// Renders the engine listing printed by `-E`.
+pub fn engine_listing(entries: &[EngineEntry]) -> String {
+    let mut listing = String::new();
+    for entry in entries {
+        let extensions: Vec<String> = entry
+            .extensions
+            .iter()
+            .map(|extension| format!(".{extension}"))
+            .collect();
+        listing.push_str(&format!(
+            "  {:<10} {:<7} {}\n",
+            entry.name,
+            extensions.join(" "),
+            entry.description
+        ));
+    }
+    listing
+}
+
 /// Chooses the engine for a run.
 ///
 /// Dispatch follows the wrkrs rules: `-e` overrides, otherwise the

@@ -1,7 +1,9 @@
 //! wrkrs core: configuration, engine registry, and the benchmark runtime.
 
+pub mod backend;
 pub mod cli;
 pub mod engines;
+pub mod getopt;
 pub mod parser;
 pub mod units;
 

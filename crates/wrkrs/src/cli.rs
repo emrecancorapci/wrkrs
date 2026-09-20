@@ -1,200 +1,373 @@
-use crate::engines::EngineEntry;
+//! The wrkrs command line: options, defaults, and validation.
+//!
+//! Ports parse_args from wrk.c including its quirks: `-v` prints the
+//! version and keeps parsing, `-h` exits through the usage path with
+//! status one, scan failures fall back to usage without a message,
+//! and the URL is the first entry of the script arguments.
 
-/// Engine related flags extracted from the command line.
-///
-/// The scanner recognizes the engine flags anywhere before `--` and
-/// leaves every other argument alone. The full getopt compatible
-/// argument parser lands with the core port and replaces this scan.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EngineFlags {
-    /// Value of `-e` or `--engine`.
+use std::io::Write;
+use std::path::PathBuf;
+
+use crate::getopt::{self, OptionDef};
+use crate::parser::parse_url;
+use crate::units::{scan_metric, scan_time};
+use wrkrs_engine::UrlRef;
+
+/// The run configuration after parsing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Config {
+    /// Worker threads.
+    pub threads: u64,
+    /// Total open connections.
+    pub connections: u64,
+    /// Run duration in seconds.
+    pub duration_s: u64,
+    /// Socket timeout in milliseconds.
+    pub timeout_ms: u64,
+    /// Whether latency percentiles print.
+    pub latency: bool,
+    /// Script file when given.
+    pub script: Option<PathBuf>,
+    /// Raw `-H` header strings, split happens when the spec is built.
+    pub headers: Vec<String>,
+    /// Engine name from `-e` when given.
     pub engine: Option<String>,
-    /// Value of `-s` or `--script`.
-    pub script: Option<String>,
-    /// `-E` or `--engines` was given.
-    pub list_engines: bool,
+    /// The benchmark URL.
+    pub url: String,
+    /// Parsed URL parts.
+    pub parts: UrlRef,
+    /// The positional arguments handed to script init, the URL first.
+    pub init_args: Vec<String>,
 }
 
-/// Error scanning the engine flags.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum FlagError {
-    /// A flag that takes a value sits at the end of the arguments.
-    #[error("option requires an argument -- '{0}'")]
-    MissingArgument(&'static str),
+/// What the command line asks for.
+#[derive(Debug, PartialEq)]
+pub enum Outcome {
+    /// Run a benchmark.
+    Run(Box<Config>),
+    /// List the compiled engines and exit zero.
+    ListEngines,
+    /// Print usage and exit one, an optional message goes to stderr
+    /// first.
+    Usage(Option<String>),
 }
 
-/// Scans the engine flags from command line arguments.
+/// The option table in wrk order, the engine flags follow timeout.
+const OPTIONS: &[OptionDef] = &[
+    OptionDef {
+        short: 'c',
+        long: "connections",
+        value: true,
+    },
+    OptionDef {
+        short: 'd',
+        long: "duration",
+        value: true,
+    },
+    OptionDef {
+        short: 't',
+        long: "threads",
+        value: true,
+    },
+    OptionDef {
+        short: 's',
+        long: "script",
+        value: true,
+    },
+    OptionDef {
+        short: 'H',
+        long: "header",
+        value: true,
+    },
+    OptionDef {
+        short: 'L',
+        long: "latency",
+        value: false,
+    },
+    OptionDef {
+        short: 'T',
+        long: "timeout",
+        value: true,
+    },
+    OptionDef {
+        short: 'e',
+        long: "engine",
+        value: true,
+    },
+    OptionDef {
+        short: 'E',
+        long: "engines",
+        value: false,
+    },
+    OptionDef {
+        short: 'h',
+        long: "help",
+        value: false,
+    },
+    OptionDef {
+        short: 'v',
+        long: "version",
+        value: false,
+    },
+];
+
+/// Parses the arguments.
 ///
-/// Accepted forms: `-e name`, `-ename`, `--engine name`, `--engine=name`
-/// and the `-s` equivalents, plus `-E` and `--engines`. Scanning stops
-/// at `--` because everything after it belongs to the script.
-pub fn scan(args: &[String]) -> Result<EngineFlags, FlagError> {
-    let mut flags = EngineFlags::default();
-    let mut index = 0;
-
-    while index < args.len() {
-        let arg = &args[index];
-        index += 1;
-
-        if arg == "--" {
-            break;
-        }
-
-        if let Some(value) = arg.strip_prefix("--engine=") {
-            flags.engine = Some(value.to_owned());
-        } else if arg == "--engine" {
-            flags.engine = Some(take_value(args, &mut index, "engine")?);
-        } else if let Some(value) = arg.strip_prefix("--script=") {
-            flags.script = Some(value.to_owned());
-        } else if arg == "--script" {
-            flags.script = Some(take_value(args, &mut index, "script")?);
-        } else if arg == "--engines" || arg == "-E" {
-            flags.list_engines = true;
-        } else if let Some(value) = arg.strip_prefix("-e") {
-            flags.engine = Some(if value.is_empty() {
-                take_value(args, &mut index, "e")?
-            } else {
-                value.to_owned()
-            });
-        } else if let Some(value) = arg.strip_prefix("-s") {
-            flags.script = Some(if value.is_empty() {
-                take_value(args, &mut index, "s")?
-            } else {
-                value.to_owned()
-            });
-        }
+/// Version output goes to `out` the moment `-v` appears, matching the
+/// print and continue behavior of wrk.
+pub fn parse(program: &str, args: &[String], out: &mut dyn Write) -> Outcome {
+    match parse_result(program, args, out) {
+        Ok(outcome) => outcome,
+        Err(outcome) => outcome,
     }
-
-    Ok(flags)
 }
 
-/// Renders the engine listing printed by `-E`.
-pub fn engine_listing(entries: &[EngineEntry]) -> String {
-    let mut listing = String::new();
-    for entry in entries {
-        let extensions: Vec<String> = entry
-            .extensions
-            .iter()
-            .map(|extension| format!(".{extension}"))
-            .collect();
-        listing.push_str(&format!(
-            "  {:<10} {:<7} {}\n",
-            entry.name,
-            extensions.join(" "),
-            entry.description
-        ));
+/// Parses into an outcome, errors as usage paths.
+fn parse_result(program: &str, args: &[String], out: &mut dyn Write) -> Result<Outcome, Outcome> {
+    let (options, positional) =
+        getopt::parse(program, args, OPTIONS).map_err(|message| Outcome::Usage(Some(message)))?;
+
+    let mut threads: u64 = 2;
+    let mut connections: u64 = 10;
+    let mut duration_s: u64 = 10;
+    let mut timeout_ms: u64 = 2000;
+    let mut latency = false;
+    let mut script: Option<PathBuf> = None;
+    let mut headers: Vec<String> = Vec::new();
+    let mut engine: Option<String> = None;
+    let mut list_engines = false;
+
+    for option in &options {
+        let value = option.value.as_deref();
+        match option.short {
+            't' => threads = scan_metric(value.unwrap_or_default()).ok_or(usage())?,
+            'c' => connections = scan_metric(value.unwrap_or_default()).ok_or(usage())?,
+            'd' => duration_s = scan_time(value.unwrap_or_default()).ok_or(usage())?,
+            'T' => {
+                let seconds = scan_time(value.unwrap_or_default()).ok_or(usage())?;
+                timeout_ms = seconds.saturating_mul(1000);
+            }
+            's' => script = Some(PathBuf::from(value.unwrap_or_default())),
+            'H' => headers.push(value.unwrap_or_default().to_owned()),
+            'L' => latency = true,
+            'e' => engine = Some(value.unwrap_or_default().to_owned()),
+            'E' => list_engines = true,
+            'v' => {
+                // wrk prints the version and keeps parsing.
+                let _ = writeln!(out, "{}", version_line());
+            }
+            _ => return Err(usage()),
+        }
     }
-    listing
+
+    if list_engines {
+        return Ok(Outcome::ListEngines);
+    }
+
+    let Some(url) = positional.first() else {
+        return Err(usage());
+    };
+    if threads == 0 || duration_s == 0 {
+        return Err(usage());
+    }
+    let Some(parts) = parse_url(url) else {
+        return Err(Outcome::Usage(Some(format!("invalid URL: {url}"))));
+    };
+    if connections == 0 || connections < threads {
+        return Err(Outcome::Usage(Some(
+            "number of connections must be >= threads".to_owned(),
+        )));
+    }
+
+    Ok(Outcome::Run(Box::new(Config {
+        threads,
+        connections,
+        duration_s,
+        timeout_ms,
+        latency,
+        script,
+        headers,
+        engine,
+        url: url.clone(),
+        parts,
+        // wrk hands the positionals to script init starting at the
+        // URL, so scripts see their own arguments from index one.
+        init_args: positional,
+    })))
 }
 
-/// Takes the value that follows a flag from the argument list.
-fn take_value(
-    args: &[String],
-    index: &mut usize,
-    option: &'static str,
-) -> Result<String, FlagError> {
-    match args.get(*index) {
-        Some(value) => {
-            *index += 1;
-            Ok(value.clone())
-        }
-        None => Err(FlagError::MissingArgument(option)),
-    }
+/// The silent usage failure, matching the scan error path of wrk.
+fn usage() -> Outcome {
+    Outcome::Usage(None)
+}
+
+/// The version line, printed before the copyright notice.
+pub fn version_line() -> String {
+    format!(
+        "wrkrs {} [{}]",
+        env!("CARGO_PKG_VERSION"),
+        crate::backend::NAME
+    )
+}
+
+/// Prints the usage text.
+pub fn print_usage(out: &mut dyn Write) {
+    let _ = writeln!(
+        out,
+        "Usage: wrkrs <options> <url>\n\
+         \n  \
+         Options:\n\
+         \n    \
+         -c, --connections <N>  Connections to keep open\n    \
+         -d, --duration    <T>  Duration of test\n    \
+         -t, --threads     <N>  Number of threads to use\n\
+         \n    \
+         -s, --script      <S>  Load script file\n    \
+         -e, --engine      <E>  Select the scripting engine\n    \
+         -E, --engines          List compiled-in scripting engines\n    \
+         -H, --header      <H>  Add header to request\n        \
+         --latency          Print latency statistics\n        \
+         --timeout     <T>  Socket/request timeout\n    \
+         -v, --version          Print version details\n\
+         \n  \
+         Numeric arguments may include a SI unit (1k, 1M, 1G)\n  \
+         Time arguments may include a time unit (2s, 2m, 2h)"
+    );
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{EngineFlags, FlagError, scan};
+    use std::io::Cursor;
+
+    use super::{Outcome, parse};
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|arg| (*arg).to_owned()).collect()
     }
 
-    fn flags(engine: Option<&str>, script: Option<&str>, list_engines: bool) -> EngineFlags {
-        EngineFlags {
-            engine: engine.map(str::to_owned),
-            script: script.map(str::to_owned),
-            list_engines,
-        }
+    fn run(list: &[&str]) -> (Outcome, String) {
+        let mut out = Cursor::new(Vec::new());
+        let outcome = parse("wrkrs", &args(list), &mut out);
+        let printed = String::from_utf8(out.into_inner()).unwrap_or_default();
+        (outcome, printed)
     }
 
     #[test]
-    fn reads_separated_short_flags() {
+    fn applies_the_defaults() {
+        let (outcome, _) = run(&["http://host/"]);
+        let Outcome::Run(config) = outcome else {
+            panic!("expected a run");
+        };
+        assert_eq!(config.threads, 2);
+        assert_eq!(config.connections, 10);
+        assert_eq!(config.duration_s, 10);
+        assert_eq!(config.timeout_ms, 2000);
+        assert!(!config.latency);
+        assert!(config.script.is_none());
+        assert!(config.engine.is_none());
+    }
+
+    #[test]
+    fn reads_every_option() {
+        let (outcome, _) = run(&[
+            "-t",
+            "4",
+            "-c100",
+            "-d",
+            "2m",
+            "-T",
+            "3s",
+            "-L",
+            "-s",
+            "b.lua",
+            "-e",
+            "quickjs",
+            "-H",
+            "Accept: text/plain",
+            "http://host:8080/x",
+        ]);
+        let Outcome::Run(config) = outcome else {
+            panic!("expected a run");
+        };
+        assert_eq!(config.threads, 4);
+        assert_eq!(config.connections, 100);
+        assert_eq!(config.duration_s, 120);
+        assert_eq!(config.timeout_ms, 3000);
+        assert!(config.latency);
+        assert_eq!(config.script, Some("b.lua".into()));
+        assert_eq!(config.engine.as_deref(), Some("quickjs"));
+        assert_eq!(config.headers, ["Accept: text/plain"]);
+        assert_eq!(config.parts.port.as_deref(), Some("8080"));
+    }
+
+    #[test]
+    fn the_url_leads_the_script_arguments() {
+        let (outcome, _) = run(&["http://host/", "--", "one", "two"]);
+        let Outcome::Run(config) = outcome else {
+            panic!("expected a run");
+        };
         assert_eq!(
-            scan(&args(&["-e", "stub", "-s", "bench.stub"])).unwrap(),
-            flags(Some("stub"), Some("bench.stub"), false)
+            config.init_args,
+            ["http://host/", "one", "two"].map(str::to_owned)
         );
     }
 
     #[test]
-    fn reads_attached_short_values() {
+    fn version_prints_and_keeps_parsing() {
+        let (outcome, printed) = run(&["-v", "http://host/"]);
+        assert!(matches!(outcome, Outcome::Run(_)));
+        assert!(printed.starts_with("wrkrs "), "printed: {printed}");
+
+        // wrk alone with -v falls through to usage because the URL is
+        // missing.
+        let (outcome, _) = run(&["-v"]);
+        assert_eq!(outcome, Outcome::Usage(None));
+    }
+
+    #[test]
+    fn scan_failures_fall_back_to_usage_silently() {
+        let (outcome, _) = run(&["-t", "wat", "http://host/"]);
+        assert_eq!(outcome, Outcome::Usage(None));
+        let (outcome, _) = run(&["-t0", "http://host/"]);
+        assert_eq!(outcome, Outcome::Usage(None));
+    }
+
+    #[test]
+    fn reports_invalid_urls() {
+        let (outcome, _) = run(&["not-a-url"]);
         assert_eq!(
-            scan(&args(&["-estub", "-sbench.stub"])).unwrap(),
-            flags(Some("stub"), Some("bench.stub"), false)
+            outcome,
+            Outcome::Usage(Some("invalid URL: not-a-url".to_owned()))
         );
     }
 
     #[test]
-    fn reads_long_flags_with_and_without_equals() {
+    fn rejects_fewer_connections_than_threads() {
+        let (outcome, _) = run(&["-t", "4", "-c", "2", "http://host/"]);
         assert_eq!(
-            scan(&args(&["--engine=stub", "--script", "bench.stub"])).unwrap(),
-            flags(Some("stub"), Some("bench.stub"), false)
+            outcome,
+            Outcome::Usage(Some("number of connections must be >= threads".to_owned()))
         );
     }
 
     #[test]
-    fn reads_the_list_flag_in_both_forms() {
-        assert_eq!(scan(&args(&["-E"])).unwrap(), flags(None, None, true));
-        assert_eq!(
-            scan(&args(&["--engines"])).unwrap(),
-            flags(None, None, true)
-        );
+    fn missing_urls_fall_back_to_usage() {
+        let (outcome, _) = run(&["-t2"]);
+        assert_eq!(outcome, Outcome::Usage(None));
     }
 
     #[test]
-    fn stops_at_the_separator() {
-        assert_eq!(
-            scan(&args(&["-e", "stub", "--", "-E", "-elua54"])).unwrap(),
-            flags(Some("stub"), None, false)
-        );
+    fn lists_engines() {
+        let (outcome, _) = run(&["-E"]);
+        assert_eq!(outcome, Outcome::ListEngines);
     }
 
     #[test]
-    fn ignores_other_arguments() {
+    fn getopt_errors_surface() {
+        let (outcome, _) = run(&["-z"]);
         assert_eq!(
-            scan(&args(&["-t2", "-c100", "http://example.test/", "-L"])).unwrap(),
-            flags(None, None, false)
+            outcome,
+            Outcome::Usage(Some("wrkrs: invalid option -- 'z'".to_owned()))
         );
-    }
-
-    #[test]
-    fn rejects_a_missing_flag_value() {
-        assert_eq!(scan(&args(&["-e"])), Err(FlagError::MissingArgument("e")));
-        assert_eq!(
-            scan(&args(&["--engine"])),
-            Err(FlagError::MissingArgument("engine"))
-        );
-        assert_eq!(
-            scan(&args(&["-e"])).unwrap_err().to_string(),
-            "option requires an argument -- 'e'"
-        );
-    }
-
-    #[test]
-    fn last_value_wins() {
-        assert_eq!(
-            scan(&args(&["-e", "stub", "-e", "quickjs"])).unwrap(),
-            flags(Some("quickjs"), None, false)
-        );
-    }
-
-    #[cfg(feature = "engine-stub")]
-    #[test]
-    fn renders_the_engine_listing() {
-        use super::engine_listing;
-        use crate::engines::engines;
-        let listing = engine_listing(engines());
-        // The stub entry always renders last with its own line.
-        assert!(listing.ends_with("  stub       .stub   Minimal engine used by tests\n"));
     }
 }
