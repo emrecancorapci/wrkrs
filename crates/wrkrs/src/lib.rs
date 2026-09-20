@@ -5,6 +5,7 @@ pub mod cli;
 pub mod engines;
 pub mod getopt;
 pub mod parser;
+pub mod stats;
 pub mod units;
 
 #[cfg(all(feature = "engine-luajit", feature = "engine-lua54"))]
