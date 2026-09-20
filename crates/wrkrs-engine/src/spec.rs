@@ -7,7 +7,12 @@ use std::path::PathBuf;
 /// - `scheme` and `host` are `None` when the URL carries none
 /// - `port` stays the raw digits because wrk installs it as a string,
 ///   not a number
-/// - `path` defaults to `/` and the query string is dropped
+/// - `path` takes everything from the path offset to the end of the
+///   URL, query string and fragment included, because script.c slices
+///   the tail instead of the field length. A URL without a path keeps
+///   the default `/` and loses its query
+/// - an IPv6 host excludes the brackets, wrk.lua adds them back when
+///   it builds the Host header
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UrlRef {
     /// URL scheme, for example `http`.
