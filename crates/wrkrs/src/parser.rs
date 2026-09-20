@@ -430,6 +430,97 @@ fn is_url_char(ch: u8) -> bool {
         | b'~')
 }
 
+/// Verifies a generated request pipeline and counts its messages.
+///
+/// Frames requests through the headers and any Content-Length body,
+/// mirroring script_verify_request. The error carries the parser
+/// message with the wrk `line:column` suffix over the consumed bytes.
+/// The position points at the start of a malformed message where the
+/// C parser points at the offending byte, and chunked request bodies
+/// frame as empty, both documented divergences of the httparse glue.
+pub fn verify_request(request: &[u8]) -> Result<u64, String> {
+    let mut count = 0;
+    let mut offset = 0;
+    while offset < request.len() {
+        match frame(&request[offset..]) {
+            Framing::Complete { headers, body } => {
+                let next = offset + headers + body;
+                if next > request.len() {
+                    return Err(diagnostic("incomplete request", request, request.len()));
+                }
+                offset = next;
+                count += 1;
+            }
+            Framing::Incomplete => {
+                return Err(diagnostic("incomplete request", request, request.len()));
+            }
+            Framing::Malformed(message) => {
+                return Err(diagnostic(&message, request, offset));
+            }
+        }
+    }
+    if count == 0 {
+        return Err(diagnostic("incomplete request", request, request.len()));
+    }
+    Ok(count)
+}
+
+/// The framing result for one message.
+enum Framing {
+    /// Headers end and body length in bytes.
+    Complete { headers: usize, body: usize },
+    /// The input ends inside the message.
+    Incomplete,
+    /// The input is not a request, carrying the parser message.
+    Malformed(String),
+}
+
+/// Frames one request out of the input.
+fn frame(input: &[u8]) -> Framing {
+    // Grow the header capacity on demand, scripts can send plenty.
+    for capacity in [16usize, 64, 256] {
+        let mut headers = vec![httparse::EMPTY_HEADER; capacity];
+        let mut request = httparse::Request::new(&mut headers);
+        match request.parse(input) {
+            Ok(httparse::Status::Complete(header_end)) => {
+                let length = request
+                    .headers
+                    .iter()
+                    .find(|header| header.name.eq_ignore_ascii_case("content-length"))
+                    .and_then(|header| std::str::from_utf8(header.value).ok())
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                return Framing::Complete {
+                    headers: header_end,
+                    body: length,
+                };
+            }
+            Ok(httparse::Status::Partial) => return Framing::Incomplete,
+            Err(httparse::Error::TooManyHeaders) => continue,
+            Err(error) => return Framing::Malformed(error.to_string()),
+        }
+    }
+    Framing::Malformed("too many headers".to_owned())
+}
+
+/// Renders the wrk diagnostic with the line and column.
+///
+/// The column counts one plus the bytes since the last newline over
+/// the consumed prefix, the same walk as the C loop.
+fn diagnostic(message: &str, request: &[u8], consumed: usize) -> String {
+    let mut line = 1;
+    let mut column = 1;
+    let consumed = consumed.min(request.len());
+    for byte in &request[..consumed] {
+        column += 1;
+        if *byte == b'\n' {
+            column = 1;
+            line += 1;
+        }
+    }
+    format!("{message} at {line}:{column}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_url;
@@ -531,5 +622,67 @@ mod tests {
         for url in invalid {
             assert_eq!(parse_url(url), None, "{url} must be invalid");
         }
+    }
+
+    use super::verify_request;
+
+    fn get(path: &str) -> String {
+        format!("GET {path} HTTP/1.1\r\nHost: h\r\n\r\n")
+    }
+
+    #[test]
+    fn verifies_single_requests() {
+        assert_eq!(verify_request(get("/").as_bytes()), Ok(1));
+    }
+
+    #[test]
+    fn counts_pipelined_requests() {
+        let pipeline = get("/?foo") + &get("/?bar") + &get("/?baz");
+        assert_eq!(verify_request(pipeline.as_bytes()), Ok(3));
+    }
+
+    #[test]
+    fn frames_bodies_through_content_length() {
+        let post = "POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhello";
+        let pipeline = format!("{post}{}", get("/"));
+        assert_eq!(verify_request(pipeline.as_bytes()), Ok(2));
+    }
+
+    #[test]
+    fn truncated_bodies_read_as_incomplete() {
+        let post = "POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 9\r\n\r\nshort";
+        assert!(
+            verify_request(post.as_bytes())
+                .unwrap_err()
+                .starts_with("incomplete request at")
+        );
+    }
+
+    #[test]
+    fn partial_headers_read_as_incomplete() {
+        let partial = "GET / HTTP/1.1\r\nHost: h\r\n";
+        // The walk consumes the whole prefix, two newlines put the
+        // position on line three at the first column.
+        assert_eq!(
+            verify_request(partial.as_bytes()),
+            Err("incomplete request at 3:1".to_owned())
+        );
+    }
+
+    #[test]
+    fn garbage_carries_the_position() {
+        let garbage = "\nnot a request";
+        assert_eq!(
+            verify_request(garbage.as_bytes()),
+            Err("invalid HTTP version at 1:1".to_owned())
+        );
+    }
+
+    #[test]
+    fn empty_requests_are_incomplete() {
+        assert_eq!(
+            verify_request(b""),
+            Err("incomplete request at 1:1".to_owned())
+        );
     }
 }
