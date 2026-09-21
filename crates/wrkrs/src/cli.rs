@@ -266,31 +266,54 @@ fn version() -> &'static str {
     option_env!("WRKRS_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
+/// The usage line width of the C usage box: every line pads to it
+/// except the last, which the C literal leaves one column short.
+const USAGE_WIDTH: usize = 54;
+
+/// Pads one usage line to the box width.
+fn pad(line: &str) -> String {
+    pad_to(line, USAGE_WIDTH)
+}
+
+/// Pads one usage line to a width.
+fn pad_to(line: &str, width: usize) -> String {
+    let mut line = line.to_owned();
+    while line.chars().count() < width {
+        line.push(' ');
+    }
+    line
+}
+
 /// Prints the usage text.
 pub fn print_usage(out: &mut dyn Write) {
-    let _ = writeln!(
-        out,
-        "Usage: wrkrs <options> <url>\n\
-         \n  \
-         Options:\n\
-         \n    \
-         -c, --connections <N>  Connections to keep open\n    \
-         -d, --duration    <T>  Duration of test\n    \
-         -t, --threads     <N>  Number of threads to use\n\
-         \n    \
-         -s, --script      <S>  Load script file\n    \
-         -e, --engine      <E>  Select the scripting engine\n    \
-         -E, --engines          List compiled-in scripting engines\n    \
-         -H, --header      <H>  Add header to request\n        \
-         --latency          Print latency statistics\n        \
-         --timeout     <T>  Socket/request timeout\n    \
-         -o, --output      <M>  Report format: legacy, modern, json\n    \
-         -O, --output-file <F>  Write the report to a file\n    \
-         -v, --version          Print version details\n\
-         \n  \
-         Numeric arguments may include a SI unit (1k, 1M, 1G)\n  \
-         Time arguments may include a time unit (2s, 2m, 2h)"
-    );
+    let lines = [
+        "Usage: wrkrs <options> <url>",
+        "  Options:",
+        "    -c, --connections <N>  Connections to keep open",
+        "    -d, --duration    <T>  Duration of test",
+        "    -t, --threads     <N>  Number of threads to use",
+        "",
+        "    -s, --script      <S>  Load script file",
+        "    -e, --engine      <E>  Select the script engine",
+        "    -E, --engines          List compiled-in engines",
+        "    -H, --header      <H>  Add header to request",
+        "        --latency          Print latency statistics",
+        "        --timeout     <T>  Socket/request timeout",
+        "    -o, --output      <M>  legacy, modern, or json",
+        "    -O, --output-file <F>  Write report to a file",
+        "    -v, --version          Print version details",
+        "",
+        "  Numeric arguments may include a SI unit (1k, 1M, 1G)",
+        "  Time arguments may include a time unit (2s, 2m, 2h)",
+    ];
+    for (index, line) in lines.iter().enumerate() {
+        if index + 1 == lines.len() {
+            // The final C literal pads one column short.
+            let _ = writeln!(out, "{}", pad_to(line, USAGE_WIDTH - 1));
+        } else {
+            let _ = writeln!(out, "{}", pad(line));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -427,6 +450,23 @@ mod tests {
             outcome,
             Outcome::Usage(Some("wrkrs: invalid option -- 'z'".to_owned()))
         );
+    }
+
+    #[test]
+    fn usage_lines_pad_to_the_box_width() {
+        let mut out = Cursor::new(Vec::new());
+        super::print_usage(&mut out);
+        let text = String::from_utf8(out.into_inner()).expect("ascii");
+        let lines: Vec<&str> = text.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            let expected = if index + 1 == lines.len() {
+                // The final C literal pads one column short.
+                53
+            } else {
+                54
+            };
+            assert_eq!(line.chars().count(), expected, "{line:?}");
+        }
     }
 
     #[test]
