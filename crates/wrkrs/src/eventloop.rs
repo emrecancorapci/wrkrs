@@ -21,6 +21,7 @@ use mio::{Events, Interest, Poll, Token};
 use crate::connection::{Connection, Counters, Event, Socket, ThreadCtx};
 use crate::runner::HostThread;
 use crate::stats::Histogram;
+use crate::tls::{TlsSetup, TlsStream};
 use wrkrs_engine::ScriptEngine;
 
 /// The sample window of the rate histogram.
@@ -58,9 +59,49 @@ enum Reaction {
 
 /// One slot of the connection table.
 struct Slot {
-    stream: TcpStream,
+    stream: Transport,
     connection: Connection,
     connecting: bool,
+}
+
+/// The stream of a slot: plain TCP or TLS over it.
+enum Transport {
+    Plain(TcpStream),
+    Tls(Box<TlsStream>),
+}
+
+impl Transport {
+    /// The underlying stream, for event registration and socket
+    /// options.
+    fn raw(&mut self) -> &mut TcpStream {
+        match self {
+            Transport::Plain(stream) => stream,
+            Transport::Tls(tls) => tls.raw(),
+        }
+    }
+
+    /// The best effort close, the ssl_close shutdown.
+    fn shutdown(&mut self) {
+        if let Transport::Tls(tls) = self {
+            tls.shutdown();
+        }
+    }
+}
+
+impl Socket for Transport {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Transport::Plain(stream) => stream.write(buf),
+            Transport::Tls(tls) => tls.write(buf),
+        }
+    }
+
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Transport::Plain(stream) => stream.read(buf),
+            Transport::Tls(tls) => tls.read(buf),
+        }
+    }
 }
 
 /// A pending deadline.
@@ -79,6 +120,8 @@ struct LoopConfig {
     dynamic: bool,
     has_delay: bool,
     wants_response: bool,
+    /// The TLS setup when the target is https.
+    tls: Option<Arc<TlsSetup>>,
 }
 
 impl LoopConfig {
@@ -110,6 +153,7 @@ pub fn run(
     dynamic: bool,
     has_delay: bool,
     wants_response: bool,
+    tls: Option<Arc<TlsSetup>>,
 ) -> Counters {
     let mut counters = Counters::default();
     let outcome = drive(
@@ -124,6 +168,7 @@ pub fn run(
         dynamic,
         has_delay,
         wants_response,
+        tls,
         &mut counters,
     );
     if let Err(message) = outcome {
@@ -148,6 +193,7 @@ fn drive(
     dynamic: bool,
     has_delay: bool,
     wants_response: bool,
+    tls: Option<Arc<TlsSetup>>,
     counters: &mut Counters,
 ) -> Result<(), String> {
     let result = loop_once(
@@ -162,6 +208,7 @@ fn drive(
         dynamic,
         has_delay,
         wants_response,
+        tls,
         counters,
     );
     handle.park(engine);
@@ -182,6 +229,7 @@ fn loop_once(
     dynamic: bool,
     has_delay: bool,
     wants_response: bool,
+    tls: Option<Arc<TlsSetup>>,
     counters: &mut Counters,
 ) -> Result<(), String> {
     let mut poll = Poll::new().map_err(|error| error.to_string())?;
@@ -201,6 +249,7 @@ fn loop_once(
         dynamic,
         has_delay,
         wants_response,
+        tls,
     };
 
     let mut slots: Vec<Option<Slot>> = Vec::with_capacity(connections);
@@ -227,13 +276,37 @@ fn loop_once(
             if slots[index].as_ref().is_some_and(|slot| slot.connecting) {
                 // The connect attempt finished, a pending error
                 // refused it and the storm reconnects at once.
-                let refused = slots[index]
-                    .as_mut()
-                    .is_some_and(|slot| matches!(slot.stream.take_error(), Ok(Some(_)) | Err(_)));
+                let refused = slots[index].as_mut().is_some_and(|slot| {
+                    matches!(slot.stream.raw().take_error(), Ok(Some(_)) | Err(_))
+                });
                 if refused {
                     counters.errors.connect += 1;
                     close_slot(&registry, &mut slots, index);
                     connect_slot(&registry, &mut slots, index, &config, counters);
+                    continue;
+                }
+                // The TCP connection is up, a TLS session keeps
+                // handshaking one step per readiness event.
+                let mut failed = false;
+                let mut handshaking = false;
+                if let Some(slot) = slots[index].as_mut()
+                    && let Transport::Tls(tls) = &mut slot.stream
+                {
+                    match tls.handshake() {
+                        Ok(true) => {}
+                        Ok(false) => handshaking = true,
+                        Err(_) => failed = true,
+                    }
+                }
+                if failed {
+                    // A fatal handshake error counts like a refused
+                    // connect and storms, the ssl_connect ERROR path.
+                    counters.errors.connect += 1;
+                    close_slot(&registry, &mut slots, index);
+                    connect_slot(&registry, &mut slots, index, &config, counters);
+                    continue;
+                }
+                if handshaking {
                     continue;
                 }
                 let reaction = slots[index]
@@ -266,7 +339,7 @@ fn loop_once(
                         }));
                         if let Some(slot) = slots[index].as_mut() {
                             let _ = registry.reregister(
-                                &mut slot.stream,
+                                slot.stream.raw(),
                                 Token(index),
                                 Interest::READABLE,
                             );
@@ -291,7 +364,7 @@ fn loop_once(
             {
                 match slot.connection.delay_fired() {
                     Event::Interest(interest) => {
-                        let _ = registry.reregister(&mut slot.stream, Token(index), interest);
+                        let _ = registry.reregister(slot.stream.raw(), Token(index), interest);
                     }
                     _ => unreachable!("delay_fired only changes interest"),
                 }
@@ -364,7 +437,7 @@ fn apply(
     match reaction {
         Reaction::Interest(interest) => {
             if let Some(slot) = slots[index].as_mut() {
-                let _ = registry.reregister(&mut slot.stream, Token(index), interest);
+                let _ = registry.reregister(slot.stream.raw(), Token(index), interest);
             }
         }
         Reaction::Reconnect => {
@@ -403,10 +476,20 @@ fn connect_slot(
     };
     let _ = stream.set_nodelay(true);
     let connection = config.connection(true);
-    let mut stream = stream;
+    let mut transport = match &config.tls {
+        Some(setup) => match setup.stream(stream) {
+            Ok(tls) => Transport::Tls(Box::new(tls)),
+            Err(_) => {
+                counters.errors.connect += 1;
+                slots[index] = None;
+                return;
+            }
+        },
+        None => Transport::Plain(stream),
+    };
     if registry
         .register(
-            &mut stream,
+            transport.raw(),
             Token(index),
             Interest::READABLE | Interest::WRITABLE,
         )
@@ -417,16 +500,17 @@ fn connect_slot(
         return;
     }
     slots[index] = Some(Slot {
-        stream,
+        stream: transport,
         connection,
         connecting: true,
     });
 }
 
-/// Drops a slot and its registration.
+/// Drops a slot and its registration, sending the TLS close first.
 fn close_slot(registry: &mio::Registry, slots: &mut [Option<Slot>], index: usize) {
     if let Some(mut slot) = slots[index].take() {
-        let _ = registry.deregister(&mut slot.stream);
+        slot.stream.shutdown();
+        let _ = registry.deregister(slot.stream.raw());
     }
 }
 
@@ -527,6 +611,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
         assert!(counters.errors.connect > 0, "the storm counts");
         assert_eq!(counters.complete, 0);
@@ -586,6 +671,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         );
         assert!(counters.complete > 0, "completed requests: {:?}", counters);
         assert!(counters.bytes > 0);

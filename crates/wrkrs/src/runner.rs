@@ -19,6 +19,7 @@ use crate::report::RunReport;
 use crate::resolve::SystemResolver;
 use crate::signals;
 use crate::stats::Histogram;
+use crate::tls::TlsSetup;
 
 /// The per thread rate histogram ceiling, MAX_THREAD_RATE_S in wrk.h.
 const MAX_THREAD_RATE: u64 = 10_000_000;
@@ -34,6 +35,7 @@ pub fn execute(config: &Config, prepared: Prepared) -> (RunReport, Box<dyn Scrip
         capabilities,
         threads,
         addresses,
+        tls,
         main,
     } = prepared;
 
@@ -56,6 +58,7 @@ pub fn execute(config: &Config, prepared: Prepared) -> (RunReport, Box<dyn Scrip
         let dynamic = !capabilities.is_static;
         let has_delay = capabilities.has_delay;
         let wants_response = capabilities.wants_response;
+        let tls = tls.clone();
         workers.push(thread::spawn(move || {
             eventloop::run(
                 address,
@@ -69,6 +72,7 @@ pub fn execute(config: &Config, prepared: Prepared) -> (RunReport, Box<dyn Scrip
                 dynamic,
                 has_delay,
                 wants_response,
+                tls,
             )
         }));
     }
@@ -127,6 +131,8 @@ pub struct Prepared {
     pub threads: Vec<Arc<HostThread>>,
     /// The reachable addresses in resolver order.
     pub addresses: Vec<SocketAddr>,
+    /// The TLS setup for an https target.
+    pub tls: Option<Arc<TlsSetup>>,
     /// The main engine for the done phase.
     pub main: Box<dyn ScriptEngine>,
 }
@@ -157,6 +163,18 @@ pub fn prepare(config: &Config, entry: &EngineEntry) -> Result<Prepared, Prepare
 
     // wrk resolves the host against the port or the scheme name.
     let host = config.parts.host.clone().unwrap_or_default();
+    // C matches any schema starting with https, a five character
+    // strncmp.
+    let tls = if config
+        .parts
+        .scheme
+        .as_deref()
+        .is_some_and(|scheme| scheme.starts_with("https"))
+    {
+        Some(Arc::new(TlsSetup::new(&host)))
+    } else {
+        None
+    };
     let service = config
         .parts
         .port
@@ -206,6 +224,7 @@ pub fn prepare(config: &Config, entry: &EngineEntry) -> Result<Prepared, Prepare
         capabilities,
         threads,
         addresses,
+        tls,
         main,
     })
 }
