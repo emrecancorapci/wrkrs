@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+authors = ["Emre Can Çorapçı <emrecancorapci@proton.me>"]
 keywords = ["http", "benchmark", "load-testing", "wrk", "cli"]
 categories = ["command-line-utilities", "network-programming", "development-tools::profiling"]
 
