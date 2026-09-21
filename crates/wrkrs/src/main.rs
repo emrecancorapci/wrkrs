@@ -42,9 +42,19 @@ fn run(config: Box<cli::Config>) {
     };
 
     match wrkrs::runner::prepare(&config, entry) {
-        Ok(_) => {
-            eprintln!("wrkrs: the benchmark loop lands in phase C3");
-            process::exit(1);
+        Ok(prepared) => {
+            let (result, mut main) = wrkrs::runner::execute(&config, prepared);
+            result.call_done(main.as_mut());
+            // The byte exact reporter lands in phase C4.
+            eprintln!(
+                "wrkrs: {} requests in {:.2}s, {} errors",
+                result.complete,
+                result.duration_us as f64 / 1_000_000.0,
+                result.errors.connect
+                    + result.errors.read
+                    + result.errors.write
+                    + result.errors.timeout
+            );
         }
         Err(error) => {
             eprintln!("{}", error.message());

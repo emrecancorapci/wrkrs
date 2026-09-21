@@ -2,11 +2,14 @@
 
 pub mod backend;
 pub mod cli;
+pub mod connection;
 pub mod engines;
+pub mod eventloop;
 pub mod getopt;
 pub mod parser;
 pub mod resolve;
 pub mod runner;
+pub mod signals;
 pub mod stats;
 pub mod units;
 

@@ -5,14 +5,155 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use wrkrs_engine::ScriptSpec;
-use wrkrs_engine::{Capabilities, EngineError, ScriptEngine, ThreadApi, Value};
+use wrkrs_engine::{
+    Capabilities, EngineError, ErrorCounts, ScriptEngine, Summary, ThreadApi, Value,
+};
 
 use crate::cli::Config;
 use crate::engines::EngineEntry;
+use crate::eventloop::{self, StopFlag};
 use crate::parser::verify_request;
 use crate::resolve::SystemResolver;
+use crate::signals;
+use crate::stats::Histogram;
+
+/// The per thread rate histogram ceiling, MAX_THREAD_RATE_S in wrk.h.
+const MAX_THREAD_RATE: u64 = 10_000_000;
+
+/// The aggregated result of one run.
+pub struct RunResult {
+    /// The wall clock runtime in microseconds.
+    pub duration_us: u64,
+    /// Completed requests.
+    pub complete: u64,
+    /// Bytes read.
+    pub bytes: u64,
+    /// Socket error counters.
+    pub errors: ErrorCounts,
+    /// The latency histogram.
+    pub latency: Arc<Histogram>,
+    /// The request rate histogram.
+    pub rate: Arc<Histogram>,
+}
+
+impl RunResult {
+    /// Calls the script done phase on the main engine. The report
+    /// prints before it, the C order.
+    pub fn call_done(&self, main: &mut dyn ScriptEngine) {
+        if !main.capabilities().has_done {
+            return;
+        }
+        let summary = Summary {
+            duration: self.duration_us,
+            requests: self.complete,
+            bytes: self.bytes,
+            errors: self.errors,
+        };
+        if let Err(error) = main.done(&summary, self.latency.clone(), self.rate.clone()) {
+            // The unprotected C call aborts, we report and keep the
+            // rest of the output.
+            eprintln!("{}", error.raw_message());
+        }
+    }
+}
+
+/// Runs a prepared benchmark: spawns the workers, waits out the
+/// duration, aggregates the counters, and applies the coordinated
+/// omission correction. The main engine comes back for the done phase
+/// after the report prints.
+pub fn execute(config: &Config, prepared: Prepared) -> (RunResult, Box<dyn ScriptEngine>) {
+    signals::install();
+    let Prepared {
+        pipeline,
+        capabilities,
+        threads,
+        addresses,
+        main,
+    } = prepared;
+
+    let latency = Arc::new(Histogram::new(config.timeout_ms.saturating_mul(1000)));
+    let rate = Arc::new(Histogram::new(MAX_THREAD_RATE));
+    let stop = Arc::new(StopFlag::new());
+    let per_thread = config.connections / config.threads;
+
+    let mut workers = Vec::new();
+    for handle in &threads {
+        let engine = handle.take().expect("the engine parked in prepare");
+        let address = handle
+            .addr()
+            .or_else(|| addresses.first().copied())
+            .expect("prepare resolved an address");
+        let worker = Arc::clone(handle);
+        let latency = Arc::clone(&latency);
+        let rate = Arc::clone(&rate);
+        let stop = Arc::clone(&stop);
+        let dynamic = !capabilities.is_static;
+        let has_delay = capabilities.has_delay;
+        let wants_response = capabilities.wants_response;
+        workers.push(thread::spawn(move || {
+            eventloop::run(
+                address,
+                per_thread as usize,
+                engine,
+                worker,
+                latency,
+                rate,
+                stop,
+                pipeline,
+                dynamic,
+                has_delay,
+                wants_response,
+            )
+        }));
+    }
+
+    let start = Instant::now();
+    let deadline = start + Duration::from_secs(config.duration_s);
+    while Instant::now() < deadline {
+        if signals::interrupted() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    stop.stop();
+    let duration_us = start.elapsed().as_micros() as u64;
+
+    let mut complete = 0;
+    let mut bytes = 0;
+    let mut errors = ErrorCounts::default();
+    for worker in workers {
+        let counters = worker.join().expect("worker finishes");
+        complete += counters.complete;
+        bytes += counters.bytes;
+        errors.connect += counters.errors.connect;
+        errors.read += counters.errors.read;
+        errors.write += counters.errors.write;
+        errors.status += counters.errors.status;
+        errors.timeout += counters.errors.timeout;
+    }
+
+    // The coordinated omission correction over the average interval.
+    if config.connections > 0 && complete / config.connections > 0 {
+        let interval = duration_us / (complete / config.connections);
+        latency.correct(interval as i64);
+    }
+
+    (
+        RunResult {
+            duration_us,
+            complete,
+            bytes,
+            errors,
+            latency,
+            rate,
+        },
+        main,
+    )
+}
 
 /// Everything the run loop needs after preparation.
 pub struct Prepared {
@@ -24,6 +165,8 @@ pub struct Prepared {
     pub threads: Vec<Arc<HostThread>>,
     /// The reachable addresses in resolver order.
     pub addresses: Vec<SocketAddr>,
+    /// The main engine for the done phase.
+    pub main: Box<dyn ScriptEngine>,
 }
 
 /// A preparation failure, printed to stderr with exit one.
@@ -101,6 +244,7 @@ pub fn prepare(config: &Config, entry: &EngineEntry) -> Result<Prepared, Prepare
         capabilities,
         threads,
         addresses,
+        main,
     })
 }
 
