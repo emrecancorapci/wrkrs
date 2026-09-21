@@ -15,7 +15,7 @@ use self::value::{lua_to_value, value_to_lua};
 
 /// The wrk default environment, embedded verbatim from the C source so
 /// behavior stays identical, table iteration order included.
-const WRK_LUA: &str = include_str!("../../../../../src/wrk.lua");
+const WRK_LUA: &str = include_str!("wrk.lua");
 
 /// Shared slot holding the host resolver the lookup functions use.
 type ResolverSlot = Arc<Mutex<Option<Arc<dyn ResolveApi>>>>;

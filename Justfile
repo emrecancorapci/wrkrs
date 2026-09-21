@@ -1,5 +1,4 @@
 # wrkrs development tasks.
-# The legacy C implementation stays buildable through build-c until parity.
 
 default:
     @just --list
@@ -30,10 +29,3 @@ lint features='':
 fmt:
     cargo fmt
 
-# Build the legacy C wrk binary (reference build during migration).
-build-c:
-    make
-
-# Benchmark a URL with the legacy C wrk for reference numbers.
-bench url: build-c
-    ./wrk -t2 -c100 -d10s {{ url }}

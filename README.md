@@ -5,8 +5,8 @@
   It combines a multithreaded design with scalable event notification
   systems such as epoll and kqueue. The default output and command
   line are byte compatible with wrk, so wrkrs works as a drop-in
-  replacement, and the original C implementation still builds from
-  `src/` with `make`.
+  replacement. The C reference implementation lived in the git
+  history until the 1.0 release.
 
   An optional script can perform HTTP request generation, response
   processing, and custom reporting. Lua is the classic engine and
