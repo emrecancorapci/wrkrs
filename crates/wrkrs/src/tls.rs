@@ -103,22 +103,53 @@ pub struct TlsStream {
     sending: usize,
 }
 
+/// A self signed server config for the tests, any valid certificate
+/// serves because the client verifies nothing.
+#[cfg(test)]
+pub fn test_server_config() -> std::sync::Arc<rustls::ServerConfig> {
+    let key = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).expect("cert");
+    let private = rustls::pki_types::PrivateKeyDer::Pkcs8(
+        rustls::pki_types::PrivatePkcs8KeyDer::from(key.signing_key.serialize_der()),
+    );
+    std::sync::Arc::new(
+        rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![key.cert.der().clone()], private)
+            .expect("valid cert"),
+    )
+}
+
 impl TlsStream {
     /// Drives the handshake one step, ssl_connect. True once the
-    /// session is established, a fatal error surfaces as an io error.
+    /// session is established. A WouldBlock is a retry step, the
+    /// WANT_READ and WANT_WRITE of the C flow, anything else is a
+    /// fatal error.
     pub fn handshake(&mut self) -> io::Result<bool> {
         if self.conn.is_handshaking() {
-            if self.conn.wants_write() {
-                write_tls(&mut self.conn, &mut self.sock)?;
-            }
-            if self.conn.wants_read() {
-                self.conn.read_tls(&mut self.sock)?;
-                self.conn
-                    .process_new_packets()
-                    .map_err(|error| io::Error::other(error.to_string()))?;
+            let retry = match self.handshake_step() {
+                Ok(()) => false,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => true,
+                Err(error) => return Err(error),
+            };
+            if retry {
+                return Ok(false);
             }
         }
         Ok(!self.conn.is_handshaking())
+    }
+
+    /// One exchange of pending handshake bytes.
+    fn handshake_step(&mut self) -> io::Result<()> {
+        if self.conn.wants_write() {
+            write_tls(&mut self.conn, &mut self.sock)?;
+        }
+        if self.conn.wants_read() {
+            self.conn.read_tls(&mut self.sock)?;
+            self.conn
+                .process_new_packets()
+                .map_err(|error| io::Error::other(error.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Flushes pending TLS records to the socket.
@@ -208,16 +239,7 @@ mod tests {
     /// A self signed server config, any valid certificate serves
     /// because the client verifies nothing.
     fn server_config() -> Arc<rustls::ServerConfig> {
-        let key = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).expect("cert");
-        let private = rustls::pki_types::PrivateKeyDer::Pkcs8(
-            rustls::pki_types::PrivatePkcs8KeyDer::from(key.signing_key.serialize_der()),
-        );
-        Arc::new(
-            rustls::ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(vec![key.cert.der().clone()], private)
-                .expect("valid cert"),
-        )
+        super::test_server_config()
     }
 
     /// Drives a server session over a blocking stream until the

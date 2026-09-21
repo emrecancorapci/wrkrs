@@ -679,4 +679,83 @@ mod tests {
         assert_eq!(counters.errors.write, 0);
         assert_eq!(counters.errors.status, 0);
     }
+
+    /// Serves keep-alive responses over TLS on one connection.
+    fn serve_tls(mut stream: StdStream) {
+        use std::io::{Read, Write};
+        let mut conn =
+            rustls::ServerConnection::new(crate::tls::test_server_config()).expect("server");
+        while conn.is_handshaking() {
+            conn.complete_io(&mut stream).expect("server handshake");
+        }
+        let mut buf = [0u8; 4096];
+        let mut pending = Vec::new();
+        loop {
+            match conn.reader().read(&mut buf) {
+                Ok(0) => return,
+                Ok(read) => pending.extend_from_slice(&buf[..read]),
+                Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => return,
+            }
+            while pending.windows(4).any(|window| window == b"\r\n\r\n") {
+                let end = pending
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .expect("checked above")
+                    + 4;
+                pending.drain(..end);
+                conn.writer()
+                    .write_all(b"HTTP/1.1 200 X\r\nContent-Length: 2\r\n\r\nok")
+                    .expect("write response");
+                conn.write_tls(&mut stream).expect("send");
+            }
+            conn.complete_io(&mut stream).expect("io");
+        }
+    }
+
+    #[test]
+    fn runs_a_live_loop_against_a_tls_server() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                thread::spawn(move || serve_tls(stream));
+            }
+        });
+
+        let url = format!("https://127.0.0.1:{}/", address.port());
+        let factory = crate::engines::default_engine().expect("an engine").factory;
+        let spec = build_spec(&test_config(&url));
+        let mut engine = factory(&spec).expect("engine builds");
+        engine
+            .init(Arc::new(HostThread::new()), &[url])
+            .expect("init");
+
+        let stop = Arc::new(StopFlag::new());
+        let early = Arc::clone(&stop);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(500));
+            early.stop();
+        });
+
+        let counters = run(
+            address,
+            1,
+            engine,
+            Arc::new(HostThread::new()),
+            Arc::new(Histogram::new(2_000_000)),
+            Arc::new(Histogram::new(10_000_000)),
+            stop,
+            1,
+            false,
+            false,
+            false,
+            Some(Arc::new(crate::tls::TlsSetup::new("127.0.0.1"))),
+        );
+        assert!(counters.complete > 0, "completed requests: {counters:?}");
+        assert!(counters.bytes > 0);
+        assert_eq!(counters.errors.read, 0);
+        assert_eq!(counters.errors.write, 0);
+        assert_eq!(counters.errors.status, 0);
+    }
 }
