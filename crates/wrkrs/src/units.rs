@@ -1,7 +1,66 @@
-//! Unit scanning for command line arguments.
+//! Unit scanning and formatting.
 //!
-//! Ports the scan side of units.c. The format side (format_time_us and
-//! friends) lands with the legacy reporter.
+//! Ports units.c: the scan side reads command line arguments, the
+//! format side renders values for the legacy reporter.
+
+/// One unit ladder: a base suffix and the steps above it.
+struct Ladder {
+    scale: f64,
+    base: &'static str,
+    units: &'static [&'static str],
+}
+
+/// Formats a value down its ladder, mirroring `format_units`.
+///
+/// The threshold is the first step times 0.85 and never changes, and
+/// the loop stops before the last step: the us ladder can only reach
+/// ms, and the s ladder only reaches m before its NULL successor ends
+/// the climb.
+fn format_units(value: f64, ladder: &Ladder, precision: usize) -> String {
+    let mut amount = value;
+    let mut unit = ladder.base;
+    let threshold = ladder.scale * 0.85;
+
+    let mut index = 0;
+    while index + 1 < ladder.units.len() && amount >= threshold {
+        amount /= ladder.scale;
+        unit = ladder.units[index];
+        index += 1;
+    }
+
+    format!("{amount:.precision$}{unit}")
+}
+
+/// The seconds ladder: s to m to h, precision zero.
+static TIME_UNITS_S: Ladder = Ladder {
+    scale: 60.0,
+    base: "s",
+    units: &["m", "h"],
+};
+
+/// Formats a duration in seconds, `format_time_s`.
+pub fn format_time_s(seconds: f64) -> String {
+    format_units(seconds, &TIME_UNITS_S, 0)
+}
+
+/// The microseconds ladder: us to ms, the s step is unreachable.
+static TIME_UNITS_US: Ladder = Ladder {
+    scale: 1000.0,
+    base: "us",
+    units: &["ms", "s"],
+};
+
+/// Formats a latency in microseconds, `format_time_us`.
+///
+/// Values of a second or more switch to the seconds ladder with two
+/// decimals.
+pub fn format_time_us(microseconds: f64) -> String {
+    if microseconds >= 1_000_000.0 {
+        format_units(microseconds / 1_000_000.0, &TIME_UNITS_S, 2)
+    } else {
+        format_units(microseconds, &TIME_UNITS_US, 2)
+    }
+}
 
 /// Scans a number with an optional unit suffix.
 ///
@@ -87,7 +146,40 @@ pub fn scan_time(input: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{scan_metric, scan_time, scan_units};
+    use super::{format_time_s, format_time_us, scan_metric, scan_time, scan_units};
+
+    #[test]
+    fn formats_seconds_with_precision_zero() {
+        assert_eq!(format_time_s(10.0), "10s");
+        assert_eq!(format_time_s(50.0), "50s");
+    }
+
+    #[test]
+    fn climbs_the_seconds_ladder_at_51() {
+        // 60 * 0.85 is the fixed threshold.
+        assert_eq!(format_time_s(50.999), "51s");
+        assert_eq!(format_time_s(51.0), "1m");
+        // The h step is unreachable, its successor ends the climb.
+        assert_eq!(format_time_s(3600.0 * 3.0), "180m");
+    }
+
+    #[test]
+    fn formats_microseconds_below_the_second() {
+        assert_eq!(format_time_us(0.0), "0.00us");
+        assert_eq!(format_time_us(849.0), "849.00us");
+        assert_eq!(format_time_us(850.0), "0.85ms");
+        assert_eq!(format_time_us(1000.0), "1.00ms");
+        assert_eq!(format_time_us(999_999.0), "1000.00ms");
+    }
+
+    #[test]
+    fn switches_to_the_seconds_ladder_at_one_second() {
+        assert_eq!(format_time_us(1_000_000.0), "1.00s");
+        assert_eq!(format_time_us(50_999_999.0), "51.00s");
+        // 51 seconds crosses the fixed 51 threshold into minutes.
+        assert_eq!(format_time_us(51_000_000.0), "0.85m");
+        assert_eq!(format_time_us(3_600_000_000.0), "60.00m");
+    }
 
     #[test]
     fn scans_plain_numbers() {
