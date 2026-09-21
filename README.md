@@ -50,6 +50,14 @@
         --timeout:     record a timeout if a response is not received within
                        this amount of time.
 
+    -o, --output:      report format: legacy (the byte compatible wrk
+                       layout, the default), modern (a clean layout with
+                       the percentile rows always present), or json (one
+                       machine readable object, latency in microseconds)
+
+    -O, --output-file: write the report to a file instead of stdout;
+                       stdout stays clean and a note goes to stderr
+
 ## Benchmarking Tips
 
   The machine running wrk must have a sufficient number of ephemeral ports
