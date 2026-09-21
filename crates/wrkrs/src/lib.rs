@@ -6,6 +6,7 @@ pub mod connection;
 pub mod engines;
 pub mod eventloop;
 pub mod getopt;
+pub mod legacy;
 pub mod parser;
 pub mod report;
 pub mod resolve;
