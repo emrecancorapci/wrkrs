@@ -21,6 +21,8 @@ mio = { version = "1.2.3", features = ["net", "os-poll"] }
 mlua = { version = "0.12.1", default-features = false, optional = true }
 rquickjs = { version = "=0.14.0", optional = true, features = ["parallel", "classes", "macro"] }
 rustls = { version = "0.23.45", default-features = false, features = ["std", "ring", "tls12"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 thiserror = "2.0.20"
 wrkrs-engine.workspace = true
 
