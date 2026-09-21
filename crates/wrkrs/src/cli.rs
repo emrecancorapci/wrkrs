@@ -13,6 +13,28 @@ use crate::parser::parse_url;
 use crate::units::{scan_metric, scan_time};
 use wrkrs_engine::UrlRef;
 
+/// The report format.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OutputMode {
+    /// The byte compatible wrk layout, the 1.0 default.
+    #[default]
+    Legacy,
+    /// The clean v1 layout.
+    Modern,
+    /// The machine readable v1 object.
+    Json,
+}
+
+/// Parses an output mode name.
+pub fn parse_output_mode(name: &str) -> Option<OutputMode> {
+    match name {
+        "legacy" => Some(OutputMode::Legacy),
+        "modern" => Some(OutputMode::Modern),
+        "json" => Some(OutputMode::Json),
+        _ => None,
+    }
+}
+
 /// The run configuration after parsing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -32,6 +54,10 @@ pub struct Config {
     pub headers: Vec<String>,
     /// Engine name from `-e` when given.
     pub engine: Option<String>,
+    /// The report format, legacy by default.
+    pub output: OutputMode,
+    /// Where the report lands, stdout by default.
+    pub output_file: Option<PathBuf>,
     /// The benchmark URL.
     pub url: String,
     /// Parsed URL parts.
@@ -90,6 +116,16 @@ const OPTIONS: &[OptionDef] = &[
         value: true,
     },
     OptionDef {
+        short: 'o',
+        long: "output",
+        value: true,
+    },
+    OptionDef {
+        short: 'O',
+        long: "output-file",
+        value: true,
+    },
+    OptionDef {
         short: 'e',
         long: "engine",
         value: true,
@@ -136,6 +172,8 @@ fn parse_result(program: &str, args: &[String], out: &mut dyn Write) -> Result<O
     let mut headers: Vec<String> = Vec::new();
     let mut engine: Option<String> = None;
     let mut list_engines = false;
+    let mut output = OutputMode::default();
+    let mut output_file: Option<PathBuf> = None;
 
     for option in &options {
         let value = option.value.as_deref();
@@ -152,6 +190,15 @@ fn parse_result(program: &str, args: &[String], out: &mut dyn Write) -> Result<O
             'L' => latency = true,
             'e' => engine = Some(value.unwrap_or_default().to_owned()),
             'E' => list_engines = true,
+            'o' => {
+                output = parse_output_mode(value.unwrap_or_default()).ok_or_else(|| {
+                    Outcome::Usage(Some(format!(
+                        "invalid output mode: {} (expected legacy, modern, or json)",
+                        value.unwrap_or_default()
+                    )))
+                })?;
+            }
+            'O' => output_file = Some(PathBuf::from(value.unwrap_or_default())),
             'v' => {
                 // wrk prints the version and keeps parsing.
                 let _ = writeln!(out, "{}", version_line());
@@ -188,6 +235,8 @@ fn parse_result(program: &str, args: &[String], out: &mut dyn Write) -> Result<O
         script,
         headers,
         engine,
+        output,
+        output_file,
         url: url.clone(),
         parts,
         // wrk hands the positionals to script init starting at the
@@ -235,6 +284,8 @@ pub fn print_usage(out: &mut dyn Write) {
          -H, --header      <H>  Add header to request\n        \
          --latency          Print latency statistics\n        \
          --timeout     <T>  Socket/request timeout\n    \
+         -o, --output      <M>  Report format: legacy, modern, json\n    \
+         -O, --output-file <F>  Write the report to a file\n    \
          -v, --version          Print version details\n\
          \n  \
          Numeric arguments may include a SI unit (1k, 1M, 1G)\n  \
@@ -246,7 +297,7 @@ pub fn print_usage(out: &mut dyn Write) {
 mod tests {
     use std::io::Cursor;
 
-    use super::{Outcome, parse};
+    use super::{Outcome, OutputMode, parse};
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|arg| (*arg).to_owned()).collect()
@@ -375,6 +426,70 @@ mod tests {
         assert_eq!(
             outcome,
             Outcome::Usage(Some("wrkrs: invalid option -- 'z'".to_owned()))
+        );
+    }
+
+    #[test]
+    fn output_mode_defaults_to_legacy() {
+        let (outcome, _) = run(&["http://host/"]);
+        let Outcome::Run(config) = outcome else {
+            panic!("expected a run");
+        };
+        assert_eq!(config.output, OutputMode::Legacy);
+        assert!(config.output_file.is_none());
+    }
+
+    #[test]
+    fn parses_the_output_flags() {
+        let cases = [
+            (&["--output", "json", "http://host/"][..], OutputMode::Json),
+            (&["-o", "modern", "http://host/"][..], OutputMode::Modern),
+            // Attached values work. Every abbreviation of --output is
+            // ambiguous with --output-file, so only the full name.
+            (&["--output=modern", "http://host/"][..], OutputMode::Modern),
+        ];
+        for (list, expected) in cases {
+            let (outcome, _) = run(list);
+            let Outcome::Run(config) = outcome else {
+                panic!("expected a run for {list:?}");
+            };
+            assert_eq!(config.output, expected);
+        }
+
+        for list in [
+            &["-O", "report.txt", "http://host/"][..],
+            &["--output-file=report.json", "http://host/"][..],
+            // The unambiguous prefix of --output-file.
+            &["--output-f", "report.json", "http://host/"][..],
+        ] {
+            let (outcome, _) = run(list);
+            let Outcome::Run(config) = outcome else {
+                panic!("expected a run for {list:?}");
+            };
+            assert!(config.output_file.is_some(), "{list:?}");
+        }
+    }
+
+    #[test]
+    fn output_abbreviations_stay_ambiguous() {
+        let (outcome, _) = run(&["--outpu", "json", "http://host/"]);
+        assert_eq!(
+            outcome,
+            Outcome::Usage(Some(
+                "wrkrs: option '--outpu' is ambiguous; possibilities: '--output' '--output-file'"
+                    .to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_output_modes() {
+        let (outcome, _) = run(&["-o", "xml", "http://host/"]);
+        assert_eq!(
+            outcome,
+            Outcome::Usage(Some(
+                "invalid output mode: xml (expected legacy, modern, or json)".to_owned()
+            ))
         );
     }
 }

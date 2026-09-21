@@ -3,7 +3,6 @@ use std::process;
 
 use wrkrs::cli::{self, Outcome};
 use wrkrs::engines;
-use wrkrs::report::Reporter;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -44,10 +43,16 @@ fn run(config: Box<cli::Config>) {
 
     match wrkrs::runner::prepare(&config, entry) {
         Ok(prepared) => {
-            let reporter = wrkrs::legacy::LegacyReporter {
-                latency: config.latency,
+            let reporter: Box<dyn wrkrs::report::Reporter> = match config.output {
+                wrkrs::cli::OutputMode::Legacy => Box::new(wrkrs::legacy::LegacyReporter {
+                    latency: config.latency,
+                }),
+                wrkrs::cli::OutputMode::Modern => Box::new(wrkrs::modern::ModernReporter),
+                wrkrs::cli::OutputMode::Json => Box::new(wrkrs::json::JsonReporter),
             };
-            {
+            // The banner is legacy output: live on stdout before the
+            // run, into the file when the report lands there.
+            if config.output == wrkrs::cli::OutputMode::Legacy && config.output_file.is_none() {
                 let mut out = io::stdout().lock();
                 wrkrs::legacy::banner(
                     &mut out,
@@ -59,7 +64,31 @@ fn run(config: Box<cli::Config>) {
                 .expect("stdout writes");
             }
             let (report, mut main) = wrkrs::runner::execute(&config, prepared);
-            reporter.report(&mut io::stdout().lock(), &report);
+            match &config.output_file {
+                None => reporter.report(&mut io::stdout().lock(), &report),
+                Some(path) => {
+                    match std::fs::File::create(path) {
+                        Ok(mut file) => {
+                            if config.output == wrkrs::cli::OutputMode::Legacy {
+                                wrkrs::legacy::banner(
+                                    &mut file,
+                                    config.duration_s,
+                                    &config.url,
+                                    config.threads,
+                                    config.connections,
+                                )
+                                .expect("file writes");
+                            }
+                            reporter.report(&mut file, &report);
+                        }
+                        Err(error) => {
+                            eprintln!("wrkrs: cannot open {path:?} for writing: {error}");
+                            process::exit(1);
+                        }
+                    }
+                    eprintln!("wrkrs: report written to {}", path.display());
+                }
+            }
             report.call_done(main.as_mut());
         }
         Err(error) => {

@@ -373,6 +373,8 @@ mod tests {
             script: None,
             headers: headers.iter().map(|header| (*header).to_owned()).collect(),
             engine: None,
+            output: Default::default(),
+            output_file: None,
             url: "http://host/".to_owned(),
             parts: parse_url("http://host/").expect("valid url"),
             init_args: vec!["http://host/".to_owned()],

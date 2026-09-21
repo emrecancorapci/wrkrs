@@ -627,6 +627,8 @@ mod tests {
             script: None,
             headers: vec![],
             engine: None,
+            output: Default::default(),
+            output_file: None,
             url: url.to_owned(),
             parts: crate::parser::parse_url(url).expect("valid url"),
             init_args: vec![url.to_owned()],
