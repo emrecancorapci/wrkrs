@@ -521,6 +521,313 @@ fn diagnostic(message: &str, request: &[u8], consumed: usize) -> String {
     format!("{message} at {line}:{column}")
 }
 
+/// One completed response.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Response {
+    /// The status code.
+    pub status: u16,
+    /// Every header pair in arrival order, duplicates included.
+    pub headers: Vec<(String, String)>,
+    /// The body bytes.
+    pub body: Vec<u8>,
+    /// Whether the message keeps the connection alive.
+    pub keep_alive: bool,
+}
+
+/// A streaming HTTP response framer over a byte feed.
+///
+/// Mirrors the joyent parser behavior wrk depends on: responses frame
+/// through Content-Length or chunked, responses without framing read
+/// until the connection closes, 1xx, 204, and 304 carry no body, and
+/// keep-alive follows the version and the Connection header. Bodies of
+/// HEAD responses misframe the same way the C parser does without
+/// method context.
+pub struct ResponseFramer {
+    buf: Vec<u8>,
+    scanned: usize,
+    state: FrameState,
+    capture: bool,
+    status: u16,
+    message_keep_alive: bool,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+/// Where the framer stands inside the current message.
+enum FrameState {
+    Headers,
+    Body {
+        remaining: usize,
+    },
+    Chunked(ChunkState),
+    UntilClose,
+    /// A fatal framing problem, the connection reconnects.
+    Broken,
+}
+
+/// The chunked transfer sub-state.
+enum ChunkState {
+    Size,
+    Data { remaining: usize },
+    Trailers,
+}
+
+impl ResponseFramer {
+    /// Creates a framer. Header and body bytes are captured only when
+    /// the script wants responses, the way wrk buffers on demand.
+    pub fn new(capture: bool) -> ResponseFramer {
+        ResponseFramer {
+            buf: Vec::new(),
+            scanned: 0,
+            state: FrameState::Headers,
+            capture,
+            status: 0,
+            message_keep_alive: true,
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
+
+    /// Feeds bytes and returns every completed response.
+    pub fn feed(&mut self, data: &[u8]) -> Result<Vec<Response>, FrameError> {
+        self.compact();
+        self.buf.extend_from_slice(data);
+        self.drain()
+    }
+
+    /// Closes the stream, completing an until-close response.
+    pub fn closed(&mut self) -> Result<Vec<Response>, FrameError> {
+        match self.state {
+            FrameState::Headers | FrameState::Body { .. } | FrameState::Chunked(_) => {
+                Err(FrameError::ClosedMidMessage)
+            }
+            FrameState::UntilClose => {
+                if self.capture {
+                    self.body.extend_from_slice(&self.buf[self.scanned..]);
+                }
+                self.scanned = self.buf.len();
+                Ok(vec![self.finish()])
+            }
+            FrameState::Broken => Err(FrameError::Broken),
+        }
+    }
+
+    /// Consumes the buffer while messages complete.
+    fn drain(&mut self) -> Result<Vec<Response>, FrameError> {
+        let mut completed = Vec::new();
+        loop {
+            match &self.state {
+                FrameState::Headers => {
+                    if let Some(message) = self.frame_headers()? {
+                        completed.push(message);
+                    } else if matches!(self.state, FrameState::Headers) {
+                        // The headers are still partial.
+                        break;
+                    }
+                }
+                FrameState::Body { .. } => {
+                    if let Some(message) = self.frame_body() {
+                        completed.push(message);
+                    } else {
+                        break;
+                    }
+                }
+                FrameState::Chunked(_) => {
+                    if let Some(message) = self.frame_chunked()? {
+                        completed.push(message);
+                    } else {
+                        break;
+                    }
+                }
+                FrameState::UntilClose | FrameState::Broken => break,
+            }
+        }
+        Ok(completed)
+    }
+
+    /// Parses the status line and headers, choosing the body framing.
+    fn frame_headers(&mut self) -> Result<Option<Response>, FrameError> {
+        for capacity in [16usize, 64] {
+            let mut headers = vec![httparse::EMPTY_HEADER; capacity];
+            let mut response = httparse::Response::new(&mut headers);
+            match response.parse(&self.buf[self.scanned..]) {
+                Ok(httparse::Status::Complete(header_end)) => {
+                    self.status = response.code.unwrap_or(0);
+                    // Keep-alive defaults open on 1.1 and closed on 1.0,
+                    // the Connection header overrides both ways.
+                    self.message_keep_alive = response.version == Some(1);
+                    self.headers.clear();
+                    for header in response.headers.iter() {
+                        let value = String::from_utf8_lossy(header.value).to_string();
+                        if header.name.eq_ignore_ascii_case("connection") {
+                            let policy = value.to_ascii_lowercase();
+                            if policy.contains("close") {
+                                self.message_keep_alive = false;
+                            }
+                            if policy.contains("keep-alive") {
+                                self.message_keep_alive = true;
+                            }
+                        }
+                        if self.capture {
+                            self.headers.push((header.name.to_owned(), value));
+                        }
+                    }
+                    self.scanned += header_end;
+
+                    // Bodies follow framing headers, some statuses
+                    // never carry one.
+                    let bodiless = self.status < 200 || self.status == 204 || self.status == 304;
+                    let length = response
+                        .headers
+                        .iter()
+                        .find(|header| header.name.eq_ignore_ascii_case("content-length"))
+                        .and_then(|header| std::str::from_utf8(header.value).ok())
+                        .and_then(|value| value.parse::<usize>().ok());
+                    let chunked = response.headers.iter().any(|header| {
+                        header.name.eq_ignore_ascii_case("transfer-encoding")
+                            && std::str::from_utf8(header.value)
+                                .is_ok_and(|value| value.to_ascii_lowercase().contains("chunked"))
+                    });
+
+                    if bodiless {
+                        // A close on a bodiless message still holds.
+                        return Ok(Some(self.finish()));
+                    }
+                    if let Some(length) = length {
+                        self.state = FrameState::Body { remaining: length };
+                    } else if chunked {
+                        self.state = FrameState::Chunked(ChunkState::Size);
+                    } else {
+                        // No framing: the body runs until the peer
+                        // closes, so the message cannot keep alive.
+                        self.message_keep_alive = false;
+                        self.state = FrameState::UntilClose;
+                    }
+                    return Ok(None);
+                }
+                Ok(httparse::Status::Partial) => return Ok(None),
+                Err(httparse::Error::TooManyHeaders) => continue,
+                Err(_) => {
+                    self.state = FrameState::Broken;
+                    return Err(FrameError::BadResponse);
+                }
+            }
+        }
+        self.state = FrameState::Broken;
+        Err(FrameError::BadResponse)
+    }
+
+    /// Consumes a Content-Length body.
+    fn frame_body(&mut self) -> Option<Response> {
+        let FrameState::Body { remaining } = &self.state else {
+            return None;
+        };
+        let remaining = *remaining;
+        if self.buf.len() - self.scanned < remaining {
+            return None;
+        }
+        if self.capture {
+            self.body
+                .extend_from_slice(&self.buf[self.scanned..self.scanned + remaining]);
+        }
+        self.scanned += remaining;
+        Some(self.finish())
+    }
+
+    /// Consumes a chunked body.
+    /// Consumes a chunked body.
+    fn frame_chunked(&mut self) -> Result<Option<Response>, FrameError> {
+        loop {
+            match &self.state {
+                FrameState::Chunked(ChunkState::Size) => {
+                    let Some(line) = self.complete_line() else {
+                        return Ok(None);
+                    };
+                    let text =
+                        String::from_utf8_lossy(&self.buf[self.scanned..self.scanned + line])
+                            .to_string();
+                    let size = match usize::from_str_radix(text.trim(), 16) {
+                        Ok(size) => size,
+                        Err(_) => {
+                            self.state = FrameState::Broken;
+                            return Err(FrameError::BadResponse);
+                        }
+                    };
+                    self.scanned += line + 2;
+                    if size == 0 {
+                        self.state = FrameState::Chunked(ChunkState::Trailers);
+                    } else {
+                        self.state = FrameState::Chunked(ChunkState::Data { remaining: size });
+                    }
+                }
+                FrameState::Chunked(ChunkState::Data { remaining }) => {
+                    let remaining = *remaining;
+                    // Chunk data plus the trailing CRLF.
+                    if self.buf.len() - self.scanned < remaining + 2 {
+                        return Ok(None);
+                    }
+                    if self.capture {
+                        self.body
+                            .extend_from_slice(&self.buf[self.scanned..self.scanned + remaining]);
+                    }
+                    self.scanned += remaining + 2;
+                    self.state = FrameState::Chunked(ChunkState::Size);
+                }
+                FrameState::Chunked(ChunkState::Trailers) => {
+                    let Some(line) = self.complete_line() else {
+                        return Ok(None);
+                    };
+                    // Trailer lines end with CRLF, an empty line closes
+                    // the message.
+                    self.scanned += line + 2;
+                    if line == 0 {
+                        return Ok(Some(self.finish()));
+                    }
+                }
+                _ => return Ok(None),
+            }
+        }
+    }
+
+    /// Finds a complete CRLF line, returning its length without the
+    /// terminator.
+    fn complete_line(&self) -> Option<usize> {
+        let line = self.buf[self.scanned..]
+            .iter()
+            .position(|byte| *byte == b'\r')?;
+        (self.scanned + line + 2 <= self.buf.len()).then_some(line)
+    }
+
+    fn finish(&mut self) -> Response {
+        self.state = FrameState::Headers;
+        Response {
+            status: self.status,
+            headers: std::mem::take(&mut self.headers),
+            body: std::mem::take(&mut self.body),
+            keep_alive: self.message_keep_alive,
+        }
+    }
+
+    /// Drops consumed bytes from the front of the buffer.
+    fn compact(&mut self) {
+        if self.scanned > 8192 {
+            self.buf.drain(..self.scanned);
+            self.scanned = 0;
+        }
+    }
+}
+
+/// Framing failures, every one reconnects like a parser error in C.
+#[derive(Debug, PartialEq)]
+pub enum FrameError {
+    /// The bytes are not a response.
+    BadResponse,
+    /// The stream closed inside a message.
+    ClosedMidMessage,
+    /// The framer already failed, the connection is dead.
+    Broken,
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_url;
@@ -684,5 +991,151 @@ mod tests {
             verify_request(b""),
             Err("incomplete request at 1:1".to_owned())
         );
+    }
+
+    use super::{FrameError, ResponseFramer};
+
+    fn full(status: u16, headers: &[(&str, &str)], body: &str) -> String {
+        let mut response = format!("HTTP/1.1 {status} X\r\n");
+        for (name, value) in headers {
+            response.push_str(&format!("{name}: {value}\r\n"));
+        }
+        response.push_str("\r\n");
+        response.push_str(body);
+        response
+    }
+
+    fn response_of(status: u16, headers: Vec<(&str, &str)>, body: &str) -> super::Response {
+        super::Response {
+            status,
+            headers: headers
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect(),
+            body: body.as_bytes().to_vec(),
+            keep_alive: true,
+        }
+    }
+
+    #[test]
+    fn frames_content_length_responses() {
+        let mut framer = ResponseFramer::new(true);
+        let completed = framer
+            .feed(full(200, &[("Content-Length", "5")], "hello").as_bytes())
+            .expect("valid response");
+        assert_eq!(
+            completed,
+            vec![response_of(200, vec![("Content-Length", "5")], "hello")]
+        );
+    }
+
+    #[test]
+    fn spans_feeds_and_back_to_back_messages() {
+        let mut framer = ResponseFramer::new(true);
+        let wire = full(200, &[("Content-Length", "2")], "hi")
+            + &full(404, &[("Content-Length", "3")], "bye");
+        let half = wire.len() / 3;
+        assert!(framer.feed(&wire.as_bytes()[..half]).unwrap().is_empty());
+        let rest = framer.feed(&wire.as_bytes()[half..]).unwrap();
+        assert_eq!(rest.len(), 2);
+        assert_eq!(rest[0].status, 200);
+        assert_eq!(rest[1].status, 404);
+    }
+
+    #[test]
+    fn frames_chunked_responses() {
+        let mut framer = ResponseFramer::new(true);
+        let wire = "HTTP/1.1 200 X\r\nTransfer-Encoding: chunked\r\n\r\n\
+                    5\r\nhello\r\n1\r\n \r\n5\r\nworld\r\n0\r\n\r\n";
+        let completed = framer.feed(wire.as_bytes()).unwrap();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].body, b"hello world");
+        assert!(completed[0].keep_alive);
+    }
+
+    #[test]
+    fn bodiless_statuses_frame_without_length() {
+        let mut framer = ResponseFramer::new(true);
+        let wire = "HTTP/1.1 204 No Content\r\n\r\n".repeat(2);
+        let completed = framer.feed(wire.as_bytes()).unwrap();
+        assert_eq!(completed.len(), 2);
+        assert!(completed.iter().all(|response| response.body.is_empty()));
+    }
+
+    #[test]
+    fn informational_responses_carry_no_body() {
+        let mut framer = ResponseFramer::new(true);
+        let wire = format!(
+            "HTTP/1.1 100 Continue\r\n\r\n{}",
+            full(200, &[("Content-Length", "2")], "ok")
+        );
+        let completed = framer.feed(wire.as_bytes()).unwrap();
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[0].status, 100);
+        assert_eq!(completed[1].status, 200);
+    }
+
+    #[test]
+    fn duplicate_headers_survive_in_order() {
+        let mut framer = ResponseFramer::new(true);
+        let wire = "HTTP/1.1 200 X\r\nSet-Cookie: a\r\nSet-Cookie: b\r\nContent-Length: 0\r\n\r\n";
+        let completed = framer.feed(wire.as_bytes()).unwrap();
+        assert_eq!(
+            completed[0].headers,
+            vec![
+                ("Set-Cookie".to_owned(), "a".to_owned()),
+                ("Set-Cookie".to_owned(), "b".to_owned()),
+                ("Content-Length".to_owned(), "0".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn close_connections_complete_only_at_eof() {
+        let mut framer = ResponseFramer::new(true);
+        let wire = "HTTP/1.1 200 X\r\nConnection: close\r\n\r\nbody until the end";
+        assert!(framer.feed(wire.as_bytes()).unwrap().is_empty());
+        let completed = framer.closed().unwrap();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].body, b"body until the end");
+        assert!(!completed[0].keep_alive);
+    }
+
+    #[test]
+    fn http_ten_closes_without_keep_alive() {
+        let mut framer = ResponseFramer::new(true);
+        let wire = "HTTP/1.0 200 X\r\nContent-Length: 2\r\n\r\nok";
+        let completed = framer.feed(wire.as_bytes()).unwrap();
+        assert_eq!(completed.len(), 1);
+        assert!(!completed[0].keep_alive);
+    }
+
+    #[test]
+    fn eof_inside_a_body_fails() {
+        let mut framer = ResponseFramer::new(true);
+        framer
+            .feed(full(200, &[("Content-Length", "9")], "short").as_bytes())
+            .unwrap();
+        assert_eq!(framer.closed().unwrap_err(), FrameError::ClosedMidMessage);
+    }
+
+    #[test]
+    fn garbage_fails_the_stream() {
+        let mut framer = ResponseFramer::new(true);
+        assert_eq!(
+            framer.feed(b"not a response").unwrap_err(),
+            FrameError::BadResponse
+        );
+    }
+
+    #[test]
+    fn uncaptured_responses_stay_empty() {
+        let mut framer = ResponseFramer::new(false);
+        let completed = framer
+            .feed(full(200, &[("Content-Length", "5")], "hello").as_bytes())
+            .unwrap();
+        assert_eq!(completed.len(), 1);
+        assert!(completed[0].headers.is_empty());
+        assert!(completed[0].body.is_empty());
     }
 }
