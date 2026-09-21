@@ -3,6 +3,7 @@ use std::process;
 
 use wrkrs::cli::{self, Outcome};
 use wrkrs::engines;
+use wrkrs::report::Reporter;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -43,18 +44,23 @@ fn run(config: Box<cli::Config>) {
 
     match wrkrs::runner::prepare(&config, entry) {
         Ok(prepared) => {
-            let (result, mut main) = wrkrs::runner::execute(&config, prepared);
-            result.call_done(main.as_mut());
-            // The byte exact reporter lands in phase C4.
-            eprintln!(
-                "wrkrs: {} requests in {:.2}s, {} errors",
-                result.complete,
-                result.duration_us as f64 / 1_000_000.0,
-                result.errors.connect
-                    + result.errors.read
-                    + result.errors.write
-                    + result.errors.timeout
-            );
+            let reporter = wrkrs::legacy::LegacyReporter {
+                latency: config.latency,
+            };
+            {
+                let mut out = io::stdout().lock();
+                wrkrs::legacy::banner(
+                    &mut out,
+                    config.duration_s,
+                    &config.url,
+                    config.threads,
+                    config.connections,
+                )
+                .expect("stdout writes");
+            }
+            let (report, mut main) = wrkrs::runner::execute(&config, prepared);
+            reporter.report(&mut io::stdout().lock(), &report);
+            report.call_done(main.as_mut());
         }
         Err(error) => {
             eprintln!("{}", error.message());

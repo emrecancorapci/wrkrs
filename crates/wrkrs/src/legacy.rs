@@ -6,8 +6,9 @@
 
 use std::io::{self, Write};
 
+use crate::report::{Reporter, RunReport};
 use crate::stats::Histogram;
-use crate::units::format_time_us;
+use crate::units::{format_binary, format_metric, format_time_s, format_time_us};
 
 /// The legacy reporter, byte compatible with wrk.
 #[derive(Default)]
@@ -58,6 +59,79 @@ impl LegacyReporter {
         }
         Ok(())
     }
+
+    /// Writes the run footer: totals, error lines, throughput.
+    pub fn footer(out: &mut dyn Write, run: &RunReport) -> io::Result<()> {
+        let runtime_s = run.duration_us as f64 / 1_000_000.0;
+        writeln!(
+            out,
+            "  {} requests in {}, {}B read",
+            run.complete,
+            format_time_us(run.duration_us as f64),
+            format_binary(run.bytes as f64)
+        )?;
+        if run.errors.connect != 0
+            || run.errors.read != 0
+            || run.errors.write != 0
+            || run.errors.timeout != 0
+        {
+            // The C report prints the 64 bit counters through %d.
+            writeln!(
+                out,
+                "  Socket errors: connect {}, read {}, write {}, timeout {}",
+                run.errors.connect as u32 as i32,
+                run.errors.read as u32 as i32,
+                run.errors.write as u32 as i32,
+                run.errors.timeout as u32 as i32
+            )?;
+        }
+        if run.errors.status != 0 {
+            writeln!(
+                out,
+                "  Non-2xx or 3xx responses: {}",
+                run.errors.status as u32 as i32
+            )?;
+        }
+        writeln!(
+            out,
+            "Requests/sec: {:>9.2}",
+            run.complete as f64 / runtime_s
+        )?;
+        writeln!(
+            out,
+            "Transfer/sec: {:>10}B",
+            format_binary(run.bytes as f64 / runtime_s)
+        )
+    }
+}
+
+impl Reporter for LegacyReporter {
+    fn report(&self, out: &mut dyn io::Write, run: &RunReport) {
+        Self::stats_header(out).expect("stdout writes");
+        Self::stats_row(out, "Latency", &run.latency, format_time_us).expect("stdout writes");
+        Self::stats_row(out, "Req/Sec", &run.rate, format_metric).expect("stdout writes");
+        if self.latency {
+            Self::distribution(out, &run.latency).expect("stdout writes");
+        }
+        Self::footer(out, run).expect("stdout writes");
+    }
+}
+
+/// Writes the two pre-run banner lines.
+pub fn banner(
+    out: &mut dyn Write,
+    duration_s: u64,
+    url: &str,
+    threads: u64,
+    connections: u64,
+) -> io::Result<()> {
+    writeln!(
+        out,
+        "Running {} test @ {}",
+        format_time_s(duration_s as f64),
+        url
+    )?;
+    writeln!(out, "  {threads} threads and {connections} connections")
 }
 
 /// Writes one unit column, `print_units` from wrk.c.
@@ -143,6 +217,68 @@ mod tests {
                 "     90%    1.50ms\n",
                 "     99%    1.50ms\n"
             )
+        );
+    }
+
+    #[test]
+    fn lays_out_the_footer() {
+        let report = super::super::report::RunReport {
+            duration_us: 2_000_000,
+            complete: 1000,
+            bytes: 2000,
+            errors: Default::default(),
+            latency: histogram_of(&[]),
+            rate: histogram_of(&[]),
+        };
+        let mut out = Vec::new();
+        LegacyReporter::footer(&mut out, &report).expect("write");
+        assert_eq!(
+            String::from_utf8(out).expect("ascii"),
+            concat!(
+                "  1000 requests in 2.00s, 1.95KB read\n",
+                "Requests/sec:    500.00\n",
+                "Transfer/sec:      0.98KB\n"
+            )
+        );
+    }
+
+    #[test]
+    fn prints_the_error_lines_only_when_set() {
+        let mut report = super::super::report::RunReport {
+            duration_us: 2_000_000,
+            complete: 1000,
+            bytes: 2000,
+            errors: wrkrs_engine::ErrorCounts {
+                connect: 0,
+                read: 2,
+                write: 0,
+                timeout: 0,
+                status: 7,
+            },
+            latency: histogram_of(&[]),
+            rate: histogram_of(&[]),
+        };
+        let mut out = Vec::new();
+        LegacyReporter::footer(&mut out, &report).expect("write");
+        let text = String::from_utf8(out).expect("ascii");
+        assert!(text.contains("  Socket errors: connect 0, read 2, write 0, timeout 0\n"));
+        assert!(text.contains("  Non-2xx or 3xx responses: 7\n"));
+
+        report.errors = Default::default();
+        let mut out = Vec::new();
+        LegacyReporter::footer(&mut out, &report).expect("write");
+        let text = String::from_utf8(out).expect("ascii");
+        assert!(!text.contains("Socket errors"));
+        assert!(!text.contains("Non-2xx"));
+    }
+
+    #[test]
+    fn writes_the_banner() {
+        let mut out = Vec::new();
+        super::banner(&mut out, 30, "http://127.0.0.1/", 2, 10).expect("write");
+        assert_eq!(
+            String::from_utf8(out).expect("ascii"),
+            "Running 30s test @ http://127.0.0.1/\n  2 threads and 10 connections\n"
         );
     }
 
