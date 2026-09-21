@@ -9,14 +9,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use wrkrs_engine::ScriptSpec;
-use wrkrs_engine::{
-    Capabilities, EngineError, ErrorCounts, ScriptEngine, Summary, ThreadApi, Value,
-};
+use wrkrs_engine::{Capabilities, EngineError, ErrorCounts, ScriptEngine, ThreadApi, Value};
 
 use crate::cli::Config;
 use crate::engines::EngineEntry;
 use crate::eventloop::{self, StopFlag};
 use crate::parser::verify_request;
+use crate::report::RunReport;
 use crate::resolve::SystemResolver;
 use crate::signals;
 use crate::stats::Histogram;
@@ -24,48 +23,11 @@ use crate::stats::Histogram;
 /// The per thread rate histogram ceiling, MAX_THREAD_RATE_S in wrk.h.
 const MAX_THREAD_RATE: u64 = 10_000_000;
 
-/// The aggregated result of one run.
-pub struct RunResult {
-    /// The wall clock runtime in microseconds.
-    pub duration_us: u64,
-    /// Completed requests.
-    pub complete: u64,
-    /// Bytes read.
-    pub bytes: u64,
-    /// Socket error counters.
-    pub errors: ErrorCounts,
-    /// The latency histogram.
-    pub latency: Arc<Histogram>,
-    /// The request rate histogram.
-    pub rate: Arc<Histogram>,
-}
-
-impl RunResult {
-    /// Calls the script done phase on the main engine. The report
-    /// prints before it, the C order.
-    pub fn call_done(&self, main: &mut dyn ScriptEngine) {
-        if !main.capabilities().has_done {
-            return;
-        }
-        let summary = Summary {
-            duration: self.duration_us,
-            requests: self.complete,
-            bytes: self.bytes,
-            errors: self.errors,
-        };
-        if let Err(error) = main.done(&summary, self.latency.clone(), self.rate.clone()) {
-            // The unprotected C call aborts, we report and keep the
-            // rest of the output.
-            eprintln!("{}", error.raw_message());
-        }
-    }
-}
-
 /// Runs a prepared benchmark: spawns the workers, waits out the
 /// duration, aggregates the counters, and applies the coordinated
 /// omission correction. The main engine comes back for the done phase
 /// after the report prints.
-pub fn execute(config: &Config, prepared: Prepared) -> (RunResult, Box<dyn ScriptEngine>) {
+pub fn execute(config: &Config, prepared: Prepared) -> (RunReport, Box<dyn ScriptEngine>) {
     signals::install();
     let Prepared {
         pipeline,
@@ -143,7 +105,7 @@ pub fn execute(config: &Config, prepared: Prepared) -> (RunResult, Box<dyn Scrip
     }
 
     (
-        RunResult {
+        RunReport {
             duration_us,
             complete,
             bytes,

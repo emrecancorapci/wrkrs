@@ -7,6 +7,7 @@ pub mod engines;
 pub mod eventloop;
 pub mod getopt;
 pub mod parser;
+pub mod report;
 pub mod resolve;
 pub mod runner;
 pub mod signals;
