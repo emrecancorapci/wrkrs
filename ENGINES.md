@@ -53,7 +53,8 @@ dispatches to whichever Lua runtime the build carries.
 
 The `SCRIPTING` document stays normative for the Lua API and every script
 in `scripts/*.lua` runs unmodified. The default environment is embedded
-verbatim from `src/wrk.lua`, so table iteration order and the
+verbatim from `crates/wrkrs/src/engines/lua/wrk.lua`, so table
+iteration order and the
 `wrk.format` mutation quirks are identical to wrk.
 
 Preserved quirks worth knowing:
