@@ -87,8 +87,13 @@ def main():
         port = start_server(cert, key)
 
         failures = []
+        binaries = [("wrkrs", "./target/release/wrkrs")]
+        if os.path.exists("./wrk"):
+            binaries.insert(0, ("C", "./wrk"))
+        else:
+            print("note: no C binary, the comparison leg is skipped")
         outputs = {}
-        for name, binary in (("C", "./wrk"), ("wrkrs", "./target/release/wrkrs")):
+        for name, binary in binaries:
             result = run(binary, port)
             outputs[name] = result.stdout
             if result.returncode != 0:
@@ -104,11 +109,14 @@ def main():
 
         for failure in failures:
             print("FAIL:", failure)
-        if not failures:
+        if not failures and "C" in outputs:
             c = re.search(r"  (\d+) requests in", outputs["C"]).group(1)
             rs = re.search(r"  (\d+) requests in", outputs["wrkrs"]).group(1)
             ratio = int(rs) / max(int(c), 1)
             print(f"https ok: C {c} requests, wrkrs {rs}, ratio {ratio:.2f}")
+        elif not failures:
+            rs = re.search(r"  (\d+) requests in", outputs["wrkrs"]).group(1)
+            print(f"https ok: wrkrs {rs} requests")
         return 1 if failures else 0
 
 

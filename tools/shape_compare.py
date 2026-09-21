@@ -11,6 +11,7 @@ owns byte parity.
 Usage: tools/shape_compare.py [duration_s]
 """
 
+import os
 import re
 import socket
 import subprocess
@@ -72,6 +73,9 @@ def parse_c(output):
 
 
 def main():
+    if not os.path.exists("./wrk"):
+        print("shape compare: no C binary, skipping (the comparison needs wrk)")
+        return 0
     port = start_server()
     failures = []
 

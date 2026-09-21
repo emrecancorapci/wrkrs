@@ -7,6 +7,7 @@ exits promptly, the report still prints with the requests completed
 until the interrupt, and no crash markers appear.
 """
 
+import os
 import re
 import signal
 import socket
@@ -68,7 +69,12 @@ def interrupted_run(binary, port):
 
 def main():
     port = start_server()
-    for name, binary in (("wrkrs", "./target/release/wrkrs"), ("C", "./wrk")):
+    binaries = [("wrkrs", "./target/release/wrkrs")]
+    if os.path.exists("./wrk"):
+        binaries.append(("C", "./wrk"))
+    else:
+        print("  note: no C binary, the comparison leg is skipped")
+    for name, binary in binaries:
         code, stdout, stderr = interrupted_run(binary, port)
         match = re.search(r"  (\d+) requests in ([0-9.]+)s", stdout)
         check(f"{name}: exit zero", code == 0, code)

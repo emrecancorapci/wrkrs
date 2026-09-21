@@ -10,6 +10,7 @@ where the report parses, of the C binary for comparison.
 Usage: tools/script_e2e.py [wrkrs-binary]
 """
 
+import os
 import re
 import socket
 import subprocess
@@ -216,7 +217,12 @@ def main():
     if not ok:
         failures += 1
 
-    # The same stop and delay shapes under the C binary.
+    # The same stop and delay shapes under the C binary, when one
+    # is present for comparison.
+    if not os.path.exists(WRK):
+        print("  note: no C binary, comparison legs skipped")
+        print("all scripts ok" if failures == 0 else f"{failures} script cases failed")
+        return 1 if failures else 0
     c_result, c_elapsed = run(WRK, port, "scripts/stop.lua", extra=("-d2s",))
     c_requests = wrk_requests(c_result)
     ok = check("stop: C also stops at one hundred", c_requests == 100, c_requests)
