@@ -106,3 +106,22 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+=========================================================================
+==  Rust Port Dependencies Notice                                      ==
+=========================================================================
+
+The Rust port (wrkrs) links or builds upon the following crates, each
+distributed under its own license (MIT OR Apache-2.0 unless noted):
+
+  mio                     event loop notifications (MIT)
+  httparse                HTTP/1.x parsing, a rewrite descending from
+                          the joyent http-parser (MIT OR Apache-2.0)
+  rustls                  TLS, with ring and aws-lc-sys backends
+                          (Apache-2.0 OR ISC OR MIT)
+  mlua                    LuaJIT and Lua 5.4 bindings (MIT)
+  rquickjs                QuickJS bindings (MIT)
+  serde, serde_json       serialization (Apache-2.0 OR MIT)
+  libc                    platform bindings (MIT OR Apache-2.0)
+
+Consult each crate's repository for the full license texts.

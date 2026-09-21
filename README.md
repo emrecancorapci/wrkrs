@@ -1,8 +1,12 @@
-# wrk - a HTTP benchmarking tool
+# wrkrs - a HTTP benchmarking tool
 
-  wrk is a modern HTTP benchmarking tool capable of generating significant
-  load when run on a single multi-core CPU. It combines a multithreaded
-  design with scalable event notification systems such as epoll and kqueue.
+  wrkrs is a Rust port of wrk, a modern HTTP benchmarking tool capable
+  of generating significant load when run on a single multi-core CPU.
+  It combines a multithreaded design with scalable event notification
+  systems such as epoll and kqueue. The default output and command
+  line are byte compatible with wrk, so wrkrs works as a drop-in
+  replacement, and the original C implementation still builds from
+  `src/` with `make`.
 
   An optional script can perform HTTP request generation, response
   processing, and custom reporting. Lua is the classic engine and
@@ -74,10 +78,15 @@
 
   wrk contains code from a number of open source projects including the
   'ae' event loop from redis, the nginx/joyent/node.js 'http-parser',
-  and Mike Pall's LuaJIT. Please consult the NOTICE file for licensing
-  details.
+  and Mike Pall's LuaJIT. The Rust port builds on mio (event loop),
+  httparse (a descendant of http-parser), rustls, mlua, and rquickjs.
+  Please consult the NOTICE file for licensing details.
 
 ## Cryptography Notice
+
+  The C implementation under `src/` links OpenSSL from `deps/` and the
+  notice below applies to it. The Rust binary uses rustls, a pure Rust
+  TLS stack, for which this notice is not required.
 
   This distribution includes cryptographic software. The country in
   which you currently reside may have restrictions on the import,
