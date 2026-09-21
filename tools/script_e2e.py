@@ -115,6 +115,31 @@ def main():
     port = start_server()
     failures = 0
 
+    # The setup script wants two threads to show the cross context
+    # traffic, so it runs on its own.
+    with seen_lock:
+        for key in seen:
+            seen[key].clear()
+    result = subprocess.run(
+        [WRKRS, "-t2", "-c2", "-d1s", "-s", "scripts/setup.lua", f"http://127.0.0.1:{port}/"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    ok = check("setup: exit zero", result.returncode == 0, result.stderr[-200:])
+    ok &= check("setup: both threads created", result.stdout.count("created") == 2, result.stdout)
+    pairs = re.findall(r"made (\d+) requests and got (\d+) responses", result.stdout)
+    ok &= check("setup: two report lines", len(pairs) == 2, result.stdout)
+    ok &= check(
+        "setup: requests match responses",
+        pairs and all(
+            int(made) >= int(got) and int(made) - int(got) <= 1 for made, got in pairs
+        ),
+        pairs,
+    )
+    if not ok:
+        failures += 1
+
     cases = [
         ("addr.lua", {}),
         ("auth.lua", {}),
@@ -213,6 +238,78 @@ def main():
     )
     if not ok:
         failures += 1
+
+    # The JavaScript twins under QuickJS carry the same observable
+    # behavior as their Lua counterparts.
+    for script in ("counter.js", "delay.js", "pipeline.js", "post.js", "report.js"):
+        name = script.removesuffix(".js")
+        with seen_lock:
+            for key in seen:
+                seen[key].clear()
+        result, _ = run(WRKRS, port, f"scripts/{script}")
+        ok = check(f"{name}.js: exit zero", result.returncode == 0, result.stderr[-300:])
+        ok &= check(f"{name}.js: completed requests", wrkrs_requests(result) > 0, result.stderr[-300:])
+        if script == "counter.js":
+            ok &= check("counter.js: header starts at one", seen["counters"][:3] == [1, 2, 3], seen["counters"][:5])
+        if script == "delay.js":
+            ok &= check("delay.js: rate bounded", 3 <= wrkrs_requests(result) < 300, wrkrs_requests(result))
+        if script == "pipeline.js":
+            for query in ("/?foo", "/?bar", "/?baz"):
+                ok &= check(f"pipeline.js: saw {query}", query in seen["paths"])
+        if script == "post.js":
+            ok &= check("post.js: body and content type", "foo=bar&baz=quux" in seen["posts"], seen["posts"][:2])
+        if script == "report.js":
+            for percentile in ("50%", "90%", "99%", "99.999%"):
+                ok &= check(
+                    f"report.js: printed {percentile}",
+                    any(line.startswith(percentile) for line in result.stdout.splitlines()),
+                    result.stdout.splitlines()[-4:],
+                )
+        if not ok:
+            failures += 1
+
+    # The stop twin under QuickJS.
+    result, elapsed = run(WRKRS, port, "scripts/stop.js", extra=("-d2s",))
+    requests = wrkrs_requests(result)
+    ok = check("stop.js: exit zero", result.returncode == 0, result.stderr[-300:])
+    ok &= check("stop.js: exactly one hundred responses", requests == 100, requests)
+    ok &= check("stop.js: main waited the full duration", elapsed >= 1.9, elapsed)
+    if not ok:
+        failures += 1
+
+    # A dying target surfaces the same socket error line in both
+    # binaries: the acceptor passes the resolve probe but closes
+    # every connection at once, so the run collects read errors in
+    # the eager reconnect storm.
+    dying = socket.socket()
+    dying.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    dying.bind(("127.0.0.1", 0))
+    dying.listen(128)
+    dying_port = dying.getsockname()[1]
+
+    def kill_all():
+        while True:
+            conn, _ = dying.accept()
+            conn.close()
+
+    threading.Thread(target=kill_all, daemon=True).start()
+
+    error_lines = []
+    for name, binary in (("wrkrs", WRKRS), ("C", WRK)):
+        result = subprocess.run(
+            [binary, "-t1", "-c1", "-d1s", f"http://127.0.0.1:{dying_port}/"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        match = re.search(r"  Socket errors: connect (\d+), read (\d+), write (\d+), timeout (\d+)", result.stdout)
+        ok = check(f"errors: {name} prints the socket error line", match is not None, result.stdout[-200:])
+        if match:
+            ok &= check(f"errors: {name} counted the read storm", int(match.group(2)) > 0, match.group(0))
+            error_lines.append("connect N, read N, write N, timeout N")
+        if not ok:
+            failures += 1
+    check("errors: the line shape matches", len(set(error_lines)) <= 1, error_lines)
 
     print("all scripts ok" if failures == 0 else f"{failures} script cases failed")
     return 1 if failures else 0
