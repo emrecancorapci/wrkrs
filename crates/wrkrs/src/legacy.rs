@@ -163,6 +163,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::{LegacyReporter, print_units};
+    use crate::report::Reporter;
 
     fn units(msg: &str, width: usize) -> String {
         let mut out = Vec::new();
@@ -280,6 +281,29 @@ mod tests {
             String::from_utf8(out).expect("ascii"),
             "Running 30s test @ http://127.0.0.1/\n  2 threads and 10 connections\n"
         );
+    }
+
+    #[test]
+    fn matches_the_c_report_byte_for_byte() {
+        let latency = histogram_of(&[
+            34, 53, 77, 171, 500, 1190, 1200, 1500, 1500, 2000, 3400, 171_000,
+        ]);
+        let rate = histogram_of(&[95_400, 98_700, 99_800, 100_100, 100_300, 105_900, 107_200]);
+        let report = super::super::report::RunReport {
+            duration_us: 2_123_456,
+            complete: 424_167,
+            bytes: 16_800_000,
+            errors: Default::default(),
+            latency,
+            rate,
+        };
+        let reporter = LegacyReporter { latency: true };
+        let mut out = Vec::new();
+        super::banner(&mut out, 30, "http://127.0.0.1:8080/", 2, 10).expect("write");
+        reporter.report(&mut out, &report);
+        let produced = String::from_utf8(out).expect("ascii");
+        let expected = include_str!("../../../tools/golden_report.txt");
+        assert_eq!(produced, expected);
     }
 
     #[test]
