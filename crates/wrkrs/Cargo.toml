@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["http", "benchmark", "load-testing", "wrk", "cli"]
+categories = ["command-line-utilities", "network-programming", "development-tools::profiling"]
 
 [features]
 default = ["engine-luajit", "engine-quickjs"]

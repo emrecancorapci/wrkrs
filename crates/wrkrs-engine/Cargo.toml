@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["http", "benchmark", "scripting", "engine", "plugin"]
+categories = ["development-tools", "api-bindings"]
 
 [lints]
 workspace = true

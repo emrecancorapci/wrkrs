@@ -2,6 +2,8 @@
 //! compiles version.o.
 
 fn main() {
+    use std::env;
+
     let described = std::process::Command::new("git")
         .args(["describe", "--tags", "--always", "--dirty"])
         .output();
@@ -9,8 +11,8 @@ fn main() {
         Ok(output) if output.status.success() => {
             String::from_utf8_lossy(&output.stdout).trim().to_owned()
         }
-        // Tarball builds fall back to the crate version.
-        _ => "0.1.0".to_owned(),
+        // Tarball builds fall back to the package version.
+        _ => env::var("CARGO_PKG_VERSION").unwrap_or_default(),
     };
     println!("cargo:rustc-env=WRKRS_VERSION={version}");
 

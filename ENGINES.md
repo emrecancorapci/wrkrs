@@ -8,7 +8,7 @@ is the classic surface, JavaScript is available out of the box, and the
 
 Without flags the engine is chosen by the script file extension:
 
-```
+```bash
 wrkrs -t2 -c10 -d10s -s bench.lua http://127.0.0.1:8080/   # Lua engine
 wrkrs -t2 -c10 -d10s -s bench.js  http://127.0.0.1:8080/   # QuickJS
 ```
@@ -16,7 +16,7 @@ wrkrs -t2 -c10 -d10s -s bench.js  http://127.0.0.1:8080/   # QuickJS
 `-e, --engine <name>` selects an engine explicitly and overrides the
 extension, `-E, --engines` lists the engines compiled into the binary:
 
-```
+```bash
 $ wrkrs -E
   luajit     .lua    LuaJIT 2.1 (vendored)
   quickjs    .js     QuickJS (rquickjs)
