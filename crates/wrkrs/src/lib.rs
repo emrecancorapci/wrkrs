@@ -13,6 +13,7 @@ pub mod resolve;
 pub mod runner;
 pub mod signals;
 pub mod stats;
+pub mod tls;
 pub mod units;
 
 #[cfg(all(feature = "engine-luajit", feature = "engine-lua54"))]
