@@ -92,8 +92,8 @@ def run(binary, port, script, extra=()):
 
 
 def wrkrs_requests(result):
-    """Pulls the completed count from the provisional summary."""
-    match = re.search(r"wrkrs: (\d+) requests", result.stderr)
+    """Pulls the completed count from the report footer."""
+    match = re.search(r"  (\d+) requests in", result.stdout)
     return int(match.group(1)) if match else -1
 
 

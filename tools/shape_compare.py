@@ -11,6 +11,7 @@ owns byte parity.
 Usage: tools/shape_compare.py [duration_s]
 """
 
+import re
 import socket
 import subprocess
 import sys
@@ -82,18 +83,17 @@ def main():
         return 1
 
     c_numbers = parse_c(c.stdout)
-    rs_stderr = rs.stderr
-    rs_complete = int(rs_stderr.split()[1].split()[0])
+    rs_out = rs.stdout
+    match = re.search(r"  (\d+) requests in", rs_out)
+    rs_complete = int(match.group(1)) if match else -1
 
     for name, value in c_numbers.items():
         if name == "complete" and value <= 0:
             failures.append(f"C completed nothing: {value}")
     if rs_complete <= 0:
         failures.append(f"wrkrs completed nothing: {rs_complete}")
-    if "errors" in rs_stderr:
-        total_errors = int(rs_stderr.split(" errors")[0].split(",")[-1])
-        if total_errors != 0:
-            failures.append(f"wrkrs counted errors: {total_errors}")
+    if "Socket errors" in rs_out:
+        failures.append("wrkrs counted socket errors against a healthy server")
     if "Socket errors" in c.stdout:
         failures.append("C counted socket errors against a healthy server")
 
