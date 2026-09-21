@@ -1,7 +1,7 @@
 # wrkrs-engine
 
 The scripting engine contract for
-[wrkrs](https://github.com/wrkrs/wrkrs), the Rust port of wrk.
+[wrkrs](https://github.com/emrecancorapci/wrkrs), the Rust port of wrk.
 
 A scripting engine plugs a guest language into the benchmark: request
 generation, response callbacks, delays, and the done phase. The crate
