@@ -62,6 +62,31 @@ pub fn format_time_us(microseconds: f64) -> String {
     }
 }
 
+/// The binary ladder for byte counts.
+static BINARY_UNITS: Ladder = Ladder {
+    scale: 1024.0,
+    base: "",
+    units: &["K", "M", "G", "T", "P"],
+};
+
+/// The metric ladder for request rates.
+static METRIC_UNITS: Ladder = Ladder {
+    scale: 1000.0,
+    base: "",
+    units: &["k", "M", "G", "T", "P"],
+};
+
+/// Formats a byte count, `format_binary`. The B suffix is the
+/// caller's, the ladder only produces the multiplier letter.
+pub fn format_binary(bytes: f64) -> String {
+    format_units(bytes, &BINARY_UNITS, 2)
+}
+
+/// Formats a request rate, `format_metric`.
+pub fn format_metric(rate: f64) -> String {
+    format_units(rate, &METRIC_UNITS, 2)
+}
+
 /// Scans a number with an optional unit suffix.
 ///
 /// Mirrors `scan_units` from units.c:
@@ -146,7 +171,32 @@ pub fn scan_time(input: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_time_s, format_time_us, scan_metric, scan_time, scan_units};
+    use super::{
+        format_binary, format_metric, format_time_s, format_time_us, scan_metric, scan_time,
+        scan_units,
+    };
+
+    #[test]
+    fn formats_bytes_through_the_binary_ladder() {
+        assert_eq!(format_binary(0.0), "0.00");
+        assert_eq!(format_binary(849.0), "849.00");
+        // 1024 * 0.85 is 870.4.
+        assert_eq!(format_binary(870.0), "870.00");
+        assert_eq!(format_binary(871.0), "0.85K");
+        assert_eq!(format_binary(1024.0 * 1024.0), "1.00M");
+        assert_eq!(format_binary(1024.0 * 1024.0 * 1024.0 * 5.0), "5.00G");
+    }
+
+    #[test]
+    fn formats_rates_through_the_metric_ladder() {
+        assert_eq!(format_metric(849.0), "849.00");
+        assert_eq!(format_metric(850.0), "0.85k");
+        assert_eq!(format_metric(1500.0), "1.50k");
+        // The climb repeats while the amount clears the threshold,
+        // so 850k is already 0.85M.
+        assert_eq!(format_metric(849_999.0), "850.00k");
+        assert_eq!(format_metric(850_000.0), "0.85M");
+    }
 
     #[test]
     fn formats_seconds_with_precision_zero() {
