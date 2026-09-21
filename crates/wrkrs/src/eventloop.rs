@@ -306,6 +306,13 @@ fn loop_once(
                 return Ok(());
             }
         }
+
+        // A thread stop exits at the end of the iteration it fired
+        // in, the aeStop timing: the batch and any due timers finish,
+        // the loop ends without another poll.
+        if handle.stopped() {
+            return Ok(());
+        }
     }
 }
 
