@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI agents working in this repository. Also look into `.opencode/RULES.md`.
+Guidance for AI agents working in this repository. Also look into `.opencode/RULES.md` and `PLAN.md`.
 
 ## Mission
 
