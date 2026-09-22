@@ -10,32 +10,35 @@ is pushed without review.
 
 ## Phase V1 — the config engine
 
-Scripts without scripts: a data file shapes the load.
+Scripts without scripts: a data file shapes the load. Done, the stop
+conditions landed with it because counting responses is the same
+machinery the engine already needed, so V2 narrows to templating.
 
-- [ ] `crates/wrkrs/src/engines/config/`: parse a TOML or JSON file
+- [x] `crates/wrkrs/src/engines/config/`: parse a TOML or JSON file
       into a request spec through one serde struct
-- [ ] schema v1: `[request]` with `method`, `path`, `body`, and a
+- [x] schema v1: `[request]` with `method`, `path`, `body`, and a
       headers table, plus `[stop]` with `requests` and `bytes`
       (absent sections mean the defaults)
-- [ ] dispatch on the `.toml` and `.json` extensions through the
+- [x] dispatch on the `.toml` and `.json` extensions through the
       existing engine registry, `-e config` overrides by name
-- [ ] the engine reports static capabilities for literal requests,
+- [x] the engine reports static capabilities for literal requests,
       dynamic once templating lands in V2
-- [ ] `-E` lists the config engine alongside the scripting engines
-- [ ] acceptance: a `bench.toml` describing a POST runs and reports
+- [x] stop conditions wired per thread, `requests` counts completed
+      requests and `bytes` counts response body bytes, a stop
+      condition turns response parsing on
+- [x] `-E` lists the config engine alongside the scripting engines
+- [x] acceptance: a `bench.toml` describing a POST runs and reports
       exactly like the equivalent `post.lua`; parse unit tests; the
       script e2e harness grows config file cases
 
-## Phase V2 — templating and stop conditions
+## Phase V2 — templating
 
 - [ ] light templating in `path`, `body`, and header values:
       `{{n}}` is a per thread counter starting at one, `{{rand}}` is
       a random integer, substitution happens per burst so a
       templated file reports dynamic capabilities
-- [ ] stop conditions: `stop.requests` stops each thread after N
-      completed requests, the stop.lua behavior as a field
 - [ ] acceptance: a templated config file behaves like `counter.lua`
-      on the wire, a stop config lands on exactly N like `stop.lua`
+      on the wire
 
 ## Phase V3 — capture rules
 
