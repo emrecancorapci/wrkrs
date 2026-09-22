@@ -11,6 +11,11 @@ authors = ["Emre Can Çorapçı <emrecancorapci@proton.me>"]
 keywords = ["http", "benchmark", "load-testing", "wrk", "cli"]
 categories = ["command-line-utilities", "network-programming", "development-tools::profiling"]
 
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/wrkrs", dest = "/usr/bin/wrkrs", mode = "755" },
+]
+
 [features]
 default = ["engine-luajit", "engine-quickjs"]
 engine-luajit = ["dep:mlua", "mlua/luajit", "mlua/vendored", "mlua/send"]

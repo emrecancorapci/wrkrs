@@ -1,0 +1,253 @@
+# Release binaries for every supported platform.
+#
+# Tag pushes (the repo convention is bare semver, 1.2.0) build all
+# platforms, package them, and open a draft GitHub release carrying
+# the assets and a SHA256SUMS file. Manual dispatches run the same
+# pipeline and leave the artifacts on the run for inspection.
+#
+# Linux gnu builds run inside a Debian 12 container, the oldest
+# still supported glibc base, so the binaries run on current Debian,
+# Ubuntu, Fedora, and RHEL alike. The rpm packages and AppImages
+# wrap the same binary. The musl tarballs are fully static for
+# minimal containers. The arm64 legs run on GitHub's free arm
+# runners, every platform builds natively, nothing cross compiles,
+# which keeps the vendored LuaJIT and QuickJS builds simple.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "[0-9]*.[0-9]*.[0-9]*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: linux ${{ matrix.arch }} gnu
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: debian:12
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            deb: amd64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            deb: arm64
+    steps:
+      - name: install the build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates imagemagick
+      - uses: actions/checkout@v4
+      - name: install the pinned rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: build
+        run: cargo build --release --locked
+      - name: smoke test the engines
+        run: target/release/wrkrs -E
+      - name: package
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          triple="${{ matrix.arch }}-unknown-linux-gnu"
+          strip target/release/wrkrs
+          mkdir -p dist "stage/wrkrs-$version-$triple"
+          cp target/release/wrkrs README.md ENGINES.md SCRIPTING LICENSE NOTICE \
+            "stage/wrkrs-$version-$triple/"
+          tar -C stage -czf "dist/wrkrs-$version-$triple.tar.gz" \
+            "wrkrs-$version-$triple"
+
+          mkdir -p pkg/DEBIAN pkg/usr/bin
+          cp target/release/wrkrs pkg/usr/bin/wrkrs
+          cat > pkg/DEBIAN/control <<CONTROL
+          Package: wrkrs
+          Version: $version
+          Section: net
+          Priority: optional
+          Architecture: ${{ matrix.deb }}
+          Maintainer: Emre Can Çorapçı <emrecancorapci@proton.me>
+          Depends: libc6 (>= 2.36)
+          Description: Modern HTTP benchmarking tool, a Rust port of wrk
+          CONTROL
+          dpkg-deb --root-owner-group --build pkg \
+            "dist/wrkrs_${version}_${{ matrix.deb }}.deb"
+
+          cargo install --locked cargo-generate-rpm
+          cargo generate-rpm -p crates/wrkrs \
+            -o "dist/wrkrs-${version}-1.${{ matrix.arch }}.rpm"
+
+          mkdir -p appdir/usr/bin
+          cp target/release/wrkrs appdir/usr/bin/wrkrs
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'here="$(dirname "$(readlink -f "$0")")"' \
+            'exec "$here/usr/bin/wrkrs" "$@"' > appdir/AppRun
+          chmod +x appdir/AppRun
+          printf '%s\n' \
+            '[Desktop Entry]' \
+            'Type=Application' \
+            'Name=wrkrs' \
+            'Comment=HTTP benchmarking tool, a Rust port of wrk' \
+            'Exec=wrkrs' \
+            'Icon=wrkrs' \
+            'Terminal=true' \
+            'Categories=Development;' > appdir/wrkrs.desktop
+          convert -size 256x256 gradient:'#0f172a'-'#475569' \
+            -bordercolor '#e2e8f0' -border 8 appdir/wrkrs.png
+          curl -sL -o appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.arch }}.AppImage"
+          chmod +x appimagetool
+          ARCH=${{ matrix.arch }} \
+            ./appimagetool --appimage-extract-and-run appdir \
+            "dist/wrkrs-$version-${{ matrix.arch }}.AppImage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  linux-static:
+    name: linux ${{ matrix.arch }} musl
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: debian:12
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: install the build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates musl-tools
+      - uses: actions/checkout@v4
+      - name: install the pinned rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: add the musl target
+        run: |
+          triple="${{ matrix.arch }}-unknown-linux-musl"
+          rustup target add "$triple"
+          variable="CC_$(echo "$triple" | tr '[:lower:]-' '[:upper:]_')"
+          echo "$variable=musl-gcc" >> "$GITHUB_ENV"
+      - name: build
+        run: |
+          triple="${{ matrix.arch }}-unknown-linux-musl"
+          cargo build --release --locked --target "$triple"
+      - name: smoke test the engines
+        run: "./target/${{ matrix.arch }}-unknown-linux-musl/release/wrkrs -E"
+      - name: package
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          triple="${{ matrix.arch }}-unknown-linux-musl"
+          binary="target/$triple/release/wrkrs"
+          strip "$binary"
+          mkdir -p dist "stage/wrkrs-$version-$triple"
+          cp "$binary" README.md ENGINES.md SCRIPTING LICENSE NOTICE \
+            "stage/wrkrs-$version-$triple/"
+          tar -C stage -czf "dist/wrkrs-$version-$triple.tar.gz" \
+            "wrkrs-$version-$triple"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-static-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  macos:
+    name: macos ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-15-intel
+          - arch: aarch64
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: cargo build --release --locked
+      - name: smoke test the engines
+        run: target/release/wrkrs -E
+      - name: package
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          triple="${{ matrix.arch }}-apple-darwin"
+          strip target/release/wrkrs
+          mkdir -p dist "stage/wrkrs-$version-$triple"
+          cp target/release/wrkrs README.md ENGINES.md SCRIPTING LICENSE NOTICE \
+            "stage/wrkrs-$version-$triple/"
+          tar -C stage -czf "dist/wrkrs-$version-$triple.tar.gz" \
+            "wrkrs-$version-$triple"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: draft the release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux, linux-static, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksum the assets
+        run: |
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+          {
+            echo "### Release assets"
+            echo
+            ls
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" > /dev/null; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" --draft --generate-notes \
+              --title "wrkrs $TAG" dist/*
+          fi
