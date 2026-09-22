@@ -241,6 +241,39 @@ mod tests {
     }
 
     #[test]
+    fn a_configured_path_lands_in_the_request_line() {
+        let script = temp_file(
+            "wrkrs-config-path.toml",
+            "[request]\npath = \"/api?key=1&x=2\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec_with(Some(&script), vec![])).unwrap();
+        assert_eq!(
+            engine.request().unwrap(),
+            b"GET /api?key=1&x=2 HTTP/1.1\r\nHost: example.test:8080\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn a_configured_method_passes_through_untouched() {
+        let script = temp_file("wrkrs-config-method.toml", "[request]\nmethod = \"get\"\n");
+        let mut engine = ConfigEngine::create(&spec_with(Some(&script), vec![])).unwrap();
+        assert!(engine.request().unwrap().starts_with(b"get / HTTP/1.1\r\n"));
+    }
+
+    #[test]
+    fn a_configured_host_header_replaces_the_default() {
+        let script = temp_file(
+            "wrkrs-config-host.toml",
+            "[request.headers]\nHost = \"proxy.example.test\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec_with(Some(&script), vec![])).unwrap();
+        assert_eq!(
+            engine.request().unwrap(),
+            b"GET / HTTP/1.1\r\nHost: proxy.example.test\r\n\r\n"
+        );
+    }
+
+    #[test]
     fn requires_a_benchmark_file() {
         let error = match ConfigEngine::create(&spec_with(None, vec![])) {
             Ok(_) => panic!("create without a file must fail"),
@@ -363,6 +396,17 @@ mod tests {
         engine.response(200, &[], b"abc").unwrap();
         assert!(!thread.stopped.load(std::sync::atomic::Ordering::Relaxed));
         engine.response(200, &[], b"abc").unwrap();
+        assert!(thread.stopped.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn responses_before_init_count_without_a_thread() {
+        let script = temp_file("wrkrs-config-stop-early.toml", "[stop]\nrequests = 1\n");
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        engine.response(200, &[], b"ok").expect("no thread yet");
+        let (thread, handle) = stopped_thread();
+        engine.init(handle, &[]).unwrap();
+        engine.response(200, &[], b"ok").unwrap();
         assert!(thread.stopped.load(std::sync::atomic::Ordering::Relaxed));
     }
 

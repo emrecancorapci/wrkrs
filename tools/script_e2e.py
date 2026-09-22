@@ -15,6 +15,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -307,6 +308,26 @@ def main():
     ok = check("stop.toml: exit zero", result.returncode == 0)
     ok &= check("stop.toml: exactly one hundred responses", requests == 100, requests)
     ok &= check("stop.toml: main waited the full duration", elapsed >= 1.9, elapsed)
+    if not ok:
+        failures += 1
+
+    # A broken benchmark file fails the run with the file named in
+    # the error, data files do not fall back to defaults.
+    broken = os.path.join(tempfile.gettempdir(), "wrkrs-e2e-broken.toml")
+    with open(broken, "w") as handle:
+        handle.write("[request]\nnope = 1\n")
+    result = subprocess.run(
+        [WRKRS, "-t1", "-c1", "-d1s", "-s", broken, f"http://127.0.0.1:{port}/"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    ok = check("broken.toml: exit one", result.returncode == 1, result.returncode)
+    ok &= check(
+        "broken.toml: error names the file",
+        "wrkrs-e2e-broken.toml" in result.stderr and "TOML parse error" in result.stderr,
+        result.stderr[-200:],
+    )
     if not ok:
         failures += 1
 

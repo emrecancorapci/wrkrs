@@ -635,7 +635,6 @@ mod tests {
         }
     }
 
-    #[cfg(any(feature = "engine-luajit", feature = "engine-lua54"))]
     #[test]
     fn runs_a_live_loop_against_a_local_server() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");

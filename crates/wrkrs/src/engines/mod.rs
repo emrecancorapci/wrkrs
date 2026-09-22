@@ -240,9 +240,12 @@ mod config_registry_tests {
     #[test]
     fn config_is_never_the_default_engine() {
         // A run without a script falls back to a scripting engine, the
-        // config engine always needs its file.
-        let default = super::default_engine().unwrap();
-        assert_ne!(default.name, "config");
+        // config engine always needs its file. A build with no
+        // scripting engine has no default at all.
+        assert_ne!(
+            super::default_engine().map(|entry| entry.name),
+            Some("config")
+        );
     }
 
     #[test]
@@ -473,10 +476,12 @@ mod stub_tests {
     #[test]
     fn select_reports_project_engines_with_a_rebuild_hint() {
         // Whichever Lua runtime is absent stands in for the not compiled
-        // project engine.
+        // project engine, a build with neither has both missing.
         #[cfg(feature = "engine-luajit")]
         let missing = "lua54";
-        #[cfg(feature = "engine-lua54")]
+        #[cfg(all(feature = "engine-lua54", not(feature = "engine-luajit")))]
+        let missing = "luajit";
+        #[cfg(not(any(feature = "engine-luajit", feature = "engine-lua54")))]
         let missing = "luajit";
         let error = select(Some("bench.stub"), Some(missing)).unwrap_err();
         assert_eq!(

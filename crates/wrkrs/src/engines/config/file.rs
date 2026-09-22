@@ -276,6 +276,40 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_string_header_values() {
+        assert!(toml::from_str::<BenchFile>("[request.headers]\nX-Api = 2").is_err());
+        assert!(toml::from_str::<BenchFile>("[request.headers]\nX-Api = true").is_err());
+        assert!(
+            serde_json::from_str::<BenchFile>("{\"request\":{\"headers\":{\"X-Api\":2}}}").is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_headers_that_are_not_a_table() {
+        assert!(toml::from_str::<BenchFile>("[request]\nheaders = [\"a\"]").is_err());
+        assert!(serde_json::from_str::<BenchFile>("{\"request\":{\"headers\":[\"a\"]}}").is_err());
+        assert!(
+            serde_json::from_str::<BenchFile>("{\"request\":{\"headers\":\"text/plain\"}}")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn json_duplicate_header_names_keep_the_last_value() {
+        let file: BenchFile = serde_json::from_str(
+            "{\"request\":{\"headers\":{\"X-Api\":\"first\",\"X-Api\":\"second\"}}}",
+        )
+        .expect("json parses");
+        let values: Vec<&str> = file
+            .request
+            .headers
+            .iter()
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(values, ["first", "second"]);
+    }
+
+    #[test]
     fn validates_the_method() {
         let mut file = BenchFile::default();
         for method in ["", "GET POST", "GE\tT"] {
@@ -369,5 +403,13 @@ mod tests {
         std::fs::write(&invalid, "[request]\npath = \"no-slash\"\n").expect("write temp file");
         let error = parse(&invalid).unwrap_err();
         assert!(error.to_string().contains("must start with a slash"));
+    }
+
+    #[test]
+    fn parse_rejects_non_utf8_files() {
+        let binary = std::env::temp_dir().join("wrkrs-config-binary.toml");
+        std::fs::write(&binary, [0x50, 0x4f, 0x53, 0x54, 0xff, 0xfe]).expect("write temp file");
+        let error = parse(&binary).unwrap_err();
+        assert!(matches!(error, FileError::Open(_, _)));
     }
 }

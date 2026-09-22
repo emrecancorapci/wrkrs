@@ -362,6 +362,7 @@ mod tests {
     use super::HostThread;
     use super::{build_spec, split_headers};
     use crate::cli::Config;
+    #[cfg(any(feature = "engine-luajit", feature = "engine-lua54"))]
     use crate::engines::EngineEntry;
     use crate::parser::parse_url;
 
@@ -526,6 +527,7 @@ mod tests {
         assert!(!prepared.capabilities.is_static);
     }
 
+    #[cfg(any(feature = "engine-luajit", feature = "engine-lua54"))]
     #[test]
     fn unreachable_targets_keep_the_wrk_message() {
         use std::net::TcpListener;
