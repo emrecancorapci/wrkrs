@@ -1,7 +1,7 @@
 # Scripting Engines
-
 wrkrs drives benchmark scripts through pluggable scripting engines. Lua
-is the classic surface, JavaScript is available out of the box, and the
+is the classic surface, JavaScript is available out of the box, TOML
+or JSON benchmark files shape a run without code, and the
 `wrkrs-engine` contract lets other languages plug in.
 
 ## Selecting an engine
@@ -11,15 +11,18 @@ Without flags the engine is chosen by the script file extension:
 ```bash
 wrkrs -t2 -c10 -d10s -s bench.lua http://127.0.0.1:8080/   # Lua engine
 wrkrs -t2 -c10 -d10s -s bench.js  http://127.0.0.1:8080/   # QuickJS
+wrkrs -t2 -c10 -d10s -s bench.toml http://127.0.0.1:8080/  # config
 ```
 
 `-e, --engine <name>` selects an engine explicitly and overrides the
-extension, `-E, --engines` lists the engines compiled into the binary:
+extension, `-E, --engines` lists the engines compiled into the
+binary:
 
 ```bash
 $ wrkrs -E
-  luajit     .lua    LuaJIT 2.1 (vendored)
-  quickjs    .js     QuickJS (rquickjs)
+  luajit     .lua         LuaJIT 2.1 (vendored)
+  quickjs    .js          QuickJS (rquickjs)
+  config     .toml .json  TOML or JSON benchmark file
 ```
 
 Failure cases carry fixed messages:
@@ -39,6 +42,7 @@ Failure cases carry fixed messages:
 | `luajit` | `.lua` | LuaJIT 2.1, vendored | default features |
 | `lua54` | `.lua` | Lua 5.4, vendored | `--no-default-features --features engine-lua54,engine-quickjs` |
 | `quickjs` | `.js` | QuickJS via rquickjs | default features |
+| `config` | `.toml` `.json` | serde, no VM | always compiled in |
 
 Engines register at compile time through cargo features, so the binary
 always knows exactly what it runs and script dispatch never guesses.
@@ -95,6 +99,46 @@ Differences from the Lua engines:
   insertion order.
 - Each engine instance caps its heap at 256 MiB and its stack at
   1 MiB, so a runaway script fails its call instead of the process.
+
+## Config engine
+
+Benchmark files shape a run without a script. The TOML shape:
+
+```toml
+[request]
+method = "POST"
+path = "/api"
+body = "foo=bar"
+
+[request.headers]
+Content-Type = "application/x-www-form-urlencoded"
+
+[stop]
+requests = 1000
+```
+
+The JSON shape carries the same fields as nested objects.
+`scripts/bench.toml` and `scripts/stop.toml` are runnable examples.
+
+Rules:
+
+- `[request]` fields default to the wrk defaults, the method GET, the
+  URL path, and no body. An empty `body` string is a present body of
+  length zero
+- file headers layer over `-H` values, same named entries replace in
+  place and new names append, the `wrk.headers` assignment rule
+- header order follows the file, document order in both formats
+- `[stop]` limits count per thread, the stop.lua behavior as fields.
+  `requests` stops after N completed requests, `bytes` after N
+  response body bytes. A stop condition turns response parsing on
+- the file is data, not code, so parsing is strict: unknown fields,
+  wrong types, and values that would corrupt the wire format fail
+  the run instead of falling back to defaults
+
+A benchmark file is a good fit when the load is request shaping and
+stop conditions. Computed requests, response logic, and custom
+reporting still belong in a script, `scripts/` holds examples of
+both shapes.
 
 ## Performance guidance
 

@@ -136,7 +136,7 @@ pub fn engine_listing(entries: &[EngineEntry]) -> String {
             .map(|extension| format!(".{extension}"))
             .collect();
         listing.push_str(&format!(
-            "  {:<10} {:<7} {}\n",
+            "  {:<10} {:<12} {}\n",
             entry.name,
             extensions.join(" "),
             entry.description

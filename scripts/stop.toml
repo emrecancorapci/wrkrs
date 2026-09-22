@@ -1,0 +1,5 @@
+# example benchmark file which stops each thread after
+# one hundred completed requests
+
+[stop]
+requests = 100

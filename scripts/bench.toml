@@ -1,0 +1,9 @@
+# example benchmark file which demonstrates setting the
+# HTTP method, body, and adding a header
+
+[request]
+method = "POST"
+body   = "foo=bar&baz=quux"
+
+[request.headers]
+Content-Type = "application/x-www-form-urlencoded"

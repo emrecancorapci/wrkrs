@@ -219,31 +219,30 @@ def main():
 
     # The same stop and delay shapes under the C binary, when one
     # is present for comparison.
-    if not os.path.exists(WRK):
+    if os.path.exists(WRK):
+        c_result, c_elapsed = run(WRK, port, "scripts/stop.lua", extra=("-d2s",))
+        c_requests = wrk_requests(c_result)
+        ok = check("stop: C also stops at one hundred", c_requests == 100, c_requests)
+        ok &= check("stop: C waited the full duration", c_elapsed >= 1.9, c_elapsed)
+        c_result, _ = run(WRK, port, "scripts/delay.lua")
+        ok &= check(
+            "delay: C rate bounded the same",
+            3 <= wrk_requests(c_result) < 300,
+            wrk_requests(c_result),
+        )
+        with seen_lock:
+            seen["counters"].clear()
+            seen["paths"].clear()
+        c_result, _ = run(WRK, port, "scripts/counter.lua")
+        ok &= check(
+            "counter: C also starts at one",
+            seen["counters"][:3] == [1, 2, 3],
+            seen["counters"][:5],
+        )
+        if not ok:
+            failures += 1
+    else:
         print("  note: no C binary, comparison legs skipped")
-        print("all scripts ok" if failures == 0 else f"{failures} script cases failed")
-        return 1 if failures else 0
-    c_result, c_elapsed = run(WRK, port, "scripts/stop.lua", extra=("-d2s",))
-    c_requests = wrk_requests(c_result)
-    ok = check("stop: C also stops at one hundred", c_requests == 100, c_requests)
-    ok &= check("stop: C waited the full duration", c_elapsed >= 1.9, c_elapsed)
-    c_result, _ = run(WRK, port, "scripts/delay.lua")
-    ok &= check(
-        "delay: C rate bounded the same",
-        3 <= wrk_requests(c_result) < 300,
-        wrk_requests(c_result),
-    )
-    with seen_lock:
-        seen["counters"].clear()
-        seen["paths"].clear()
-    c_result, _ = run(WRK, port, "scripts/counter.lua")
-    ok &= check(
-        "counter: C also starts at one",
-        seen["counters"][:3] == [1, 2, 3],
-        seen["counters"][:5],
-    )
-    if not ok:
-        failures += 1
 
     # The JavaScript twins under QuickJS carry the same observable
     # behavior as their Lua counterparts.
@@ -283,6 +282,34 @@ def main():
     if not ok:
         failures += 1
 
+    # Benchmark files drive the config engine, TOML and JSON shape
+    # the same POST as post.lua and a stop file lands on exactly one
+    # hundred like stop.lua.
+    for bench in ("bench.toml", "bench.json"):
+        with seen_lock:
+            for key in seen:
+                seen[key].clear()
+        result, _ = run(WRKRS, port, f"scripts/{bench}")
+        ok = check(f"{bench}: exit zero", result.returncode == 0, result.stderr[-200:])
+        ok &= check(f"{bench}: completed requests", wrkrs_requests(result) > 0, result.stderr[-200:])
+        ok &= check(
+            f"{name}: body and content type",
+            "foo=bar&baz=quux" in seen["posts"],
+            seen["posts"][:2],
+        )
+        if not ok:
+            failures += 1
+
+    with seen_lock:
+        seen["paths"].clear()
+    result, elapsed = run(WRKRS, port, "scripts/stop.toml", extra=("-d2s",))
+    requests = wrkrs_requests(result)
+    ok = check("stop.toml: exit zero", result.returncode == 0)
+    ok &= check("stop.toml: exactly one hundred responses", requests == 100, requests)
+    ok &= check("stop.toml: main waited the full duration", elapsed >= 1.9, elapsed)
+    if not ok:
+        failures += 1
+
     # A dying target surfaces the same socket error line in both
     # binaries: the acceptor passes the resolve probe but closes
     # every connection at once, so the run collects read errors in
@@ -302,6 +329,8 @@ def main():
 
     error_lines = []
     for name, binary in (("wrkrs", WRKRS), ("C", WRK)):
+        if name == "C" and not os.path.exists(WRK):
+            continue
         result = subprocess.run(
             [binary, "-t1", "-c1", "-d1s", f"http://127.0.0.1:{dying_port}/"],
             capture_output=True,

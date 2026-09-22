@@ -8,11 +8,12 @@
   replacement. The C reference implementation lived in the git
   history until the 1.0 release.
 
-  An optional script can perform HTTP request generation, response
-  processing, and custom reporting. Lua is the classic engine and
-  JavaScript is built in, selected by the script extension or the
-  `-e` flag. Details are available in SCRIPTING and ENGINES.md and
-  several examples are located in [scripts/](scripts/).
+  An optional script or benchmark file shapes the load. Lua is the
+  classic engine, JavaScript is built in, and TOML or JSON benchmark
+  files cover request shaping and stop conditions without code,
+  selected by the file extension or the `-e` flag. Details are
+  available in SCRIPTING and ENGINES.md and several examples are
+  located in [scripts/](scripts/).
 
 ## Basic Usage
 
@@ -41,7 +42,8 @@
 
     -t, --threads:     total number of threads to use
 
-    -s, --script:      LuaJIT or JavaScript script, see SCRIPTING and ENGINES.md
+    -s, --script:      LuaJIT or JavaScript script, or a TOML or JSON
+                       benchmark file, see SCRIPTING and ENGINES.md
 
     -e, --engine:      scripting engine, overriding the script extension
 

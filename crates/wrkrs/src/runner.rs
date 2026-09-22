@@ -159,7 +159,8 @@ pub fn prepare(config: &Config, entry: &EngineEntry) -> Result<Prepared, Prepare
     let spec = build_spec(config);
     let resolver = Arc::new(SystemResolver::new());
 
-    let mut main = (entry.factory)(&spec).map_err(|error| PrepareError(error.to_string()))?;
+    let mut main =
+        (entry.factory)(&spec).map_err(|error| PrepareError(error.raw_message().to_owned()))?;
 
     // wrk resolves the host against the port or the scheme name.
     let host = config.parts.host.clone().unwrap_or_default();
@@ -195,7 +196,8 @@ pub fn prepare(config: &Config, entry: &EngineEntry) -> Result<Prepared, Prepare
     let mut pipeline = 1;
     let mut capabilities = Capabilities::default();
     for index in 0..config.threads {
-        let engine = (entry.factory)(&spec).map_err(|error| PrepareError(error.to_string()))?;
+        let engine =
+            (entry.factory)(&spec).map_err(|error| PrepareError(error.raw_message().to_owned()))?;
         let handle = Arc::new(HostThread::new());
         handle.park(engine);
 
