@@ -941,7 +941,7 @@ dependencies = [
 
 [[package]]
 name = "wrkrs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "httparse",
  "libc",
@@ -960,14 +960,14 @@ dependencies = [
 
 [[package]]
 name = "wrkrs-engine"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "wrkrs-engine-tests"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "wrkrs-engine",
 ]
