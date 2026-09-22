@@ -2,6 +2,7 @@ use std::path::Path;
 
 use wrkrs_engine::{EngineError, ScriptEngine, ScriptSpec};
 
+pub mod config;
 #[cfg(any(feature = "engine-luajit", feature = "engine-lua54"))]
 pub mod lua;
 #[cfg(feature = "engine-quickjs")]
@@ -88,6 +89,12 @@ pub fn engines() -> &'static [EngineEntry] {
             description: "QuickJS (rquickjs)",
             factory: quickjs::factory,
         },
+        EngineEntry {
+            name: "config",
+            extensions: &["toml", "json"],
+            description: "TOML or JSON benchmark file",
+            factory: config::factory,
+        },
         #[cfg(feature = "engine-stub")]
         EngineEntry {
             name: "stub",
@@ -112,9 +119,11 @@ pub fn find_by_extension(script: &str) -> Option<&'static EngineEntry> {
 }
 
 /// The engine for runs without a script, the Lua engine when the
-/// build carries one, otherwise the first entry.
+/// build carries one, otherwise the first scripting entry. The
+/// config engine never qualifies, it always needs its file.
 pub fn default_engine() -> Option<&'static EngineEntry> {
-    find_by_extension("default.lua").or_else(|| engines().first())
+    find_by_extension("default.lua")
+        .or_else(|| engines().iter().find(|entry| entry.name != "config"))
 }
 
 /// Renders the engine listing printed by `-E`.
@@ -200,6 +209,53 @@ fn engine_list() -> String {
         })
         .collect::<Vec<String>>()
         .join(", ")
+}
+
+#[cfg(test)]
+mod config_registry_tests {
+    use super::{engine_listing, engines, find, find_by_extension, select};
+
+    #[test]
+    fn registers_the_config_engine_unconditionally() {
+        assert!(engines().iter().any(|entry| entry.name == "config"));
+    }
+
+    #[test]
+    fn dispatches_benchmark_files_to_the_config_engine() {
+        assert_eq!(find_by_extension("bench.toml").unwrap().name, "config");
+        assert_eq!(find_by_extension("bench.json").unwrap().name, "config");
+    }
+
+    #[test]
+    fn finds_the_config_engine_by_flag() {
+        assert_eq!(find("config").unwrap().extensions, &["toml", "json"]);
+    }
+
+    #[test]
+    fn select_lets_the_config_flag_override_the_extension() {
+        let entry = select(Some("bench.lua"), Some("config")).unwrap().unwrap();
+        assert_eq!(entry.name, "config");
+    }
+
+    #[test]
+    fn config_is_never_the_default_engine() {
+        // A run without a script falls back to a scripting engine, the
+        // config engine always needs its file.
+        let default = super::default_engine().unwrap();
+        assert_ne!(default.name, "config");
+    }
+
+    #[test]
+    fn lists_the_config_engine_with_both_extensions() {
+        let listing = engine_listing(engines());
+        let line = listing
+            .lines()
+            .find(|line| line.starts_with("  config"))
+            .expect("config line");
+        assert!(line.contains(".toml"));
+        assert!(line.contains(".json"));
+        assert!(line.contains("benchmark file"));
+    }
 }
 
 #[cfg(all(test, any(feature = "engine-luajit", feature = "engine-lua54")))]

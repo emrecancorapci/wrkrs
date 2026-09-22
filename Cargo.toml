@@ -20,4 +20,7 @@ unsafe_op_in_unsafe_fn = "deny"
 all = "warn"
 
 [workspace.dependencies]
+serde = "1.0.229"
+serde_json = "1.0.151"
+toml = { version = "0.9.8", features = ["preserve_order"] }
 wrkrs-engine = { version = "1.0.0", path = "crates/wrkrs-engine" }
