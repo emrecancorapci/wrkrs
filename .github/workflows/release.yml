@@ -54,7 +54,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential git curl ca-certificates imagemagick
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install the pinned rust toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -145,7 +145,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential git curl ca-certificates musl-tools
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install the pinned rust toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -194,7 +194,7 @@ jobs:
           - arch: aarch64
             runner: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: build
         run: cargo build --release --locked
       - name: smoke test the engines
