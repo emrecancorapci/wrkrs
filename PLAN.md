@@ -84,3 +84,20 @@ machinery the engine already needed, so V2 narrows to templating.
       decides
 - [ ] acceptance: captured output is identical with and without a
       TTY
+
+## Phase V8 — the npm package
+
+The wrkrs binary inside npm packages with a JavaScript API over it:
+`run(options) -> report`, pure JS, no FFI, the binary straight from
+the release pipeline. Sequenced after the capability phases; the
+detail lives in PACKAGING.md, which is the plan for this line.
+
+- [ ] P1 the contract and scaffold: `run()` over `-o json`, tests,
+      the `node` CI job, the npm name claimed
+- [ ] P2 the full API: config file options, abort, error taxonomy,
+      types, the bin shim
+- [ ] P3 platform packages: the six release legs as
+      `optionalDependencies`, resolution, clean failure
+- [ ] P4 the publish pipeline: release-published gated, checksum
+      verified, provenance
+- [ ] P5 docs: the package README and the root Packages section
