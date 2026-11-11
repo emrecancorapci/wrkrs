@@ -15,5 +15,5 @@ Third parties implement this contract and ship their own binary; the
 against the same behaviors the bundled engines pass.
 
 See
-[ENGINES.md](https://github.com/emrecancorapci/wrkrs/blob/main/ENGINES.md)
+[docs/user/engines.md](https://github.com/emrecancorapci/wrkrs/blob/main/docs/user/engines.md)
 for the full guide.

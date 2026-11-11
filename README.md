@@ -12,8 +12,9 @@
   classic engine, JavaScript is built in, and TOML or JSON benchmark
   files cover request shaping and stop conditions without code,
   selected by the file extension or the `-e` flag. Details are
-  available in SCRIPTING and ENGINES.md and several examples are
-  located in [scripts/](scripts/).
+  available in [docs/user/scripting/lua.md](docs/user/scripting/lua.md)
+  and [docs/user/engines.md](docs/user/engines.md) and several
+  examples are located in [scripts/](scripts/).
 
 ## Basic Usage
 
@@ -43,7 +44,8 @@
     -t, --threads:     total number of threads to use
 
     -s, --script:      LuaJIT or JavaScript script, or a TOML or JSON
-                       benchmark file, see SCRIPTING and ENGINES.md
+                       benchmark file, see docs/user/scripting/lua.md
+                       and docs/user/engines.md
 
     -e, --engine:      scripting engine, overriding the script extension
 

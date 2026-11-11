@@ -55,7 +55,8 @@ dispatches to whichever Lua runtime the build carries.
 
 ## Lua engines
 
-The `SCRIPTING` document stays normative for the Lua API and every script
+The [Lua scripting doc](scripting/lua.md) stays normative for the
+Lua API and every script
 in `scripts/*.lua` runs unmodified. The default environment is embedded
 verbatim from `crates/wrkrs/src/engines/lua/wrk.lua`, so table
 iteration order and the

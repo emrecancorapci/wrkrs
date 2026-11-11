@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI agents working in this repository. Also look into `.opencode/RULES.md` and `PLAN.md`.
+Guidance for AI agents working in this repository. Also look into `.opencode/RULES.md` and `docs/dev/PLAN.md`.
 
 ## Mission
 
@@ -82,7 +82,7 @@ contract crate `wrkrs-engine`.
 - `stats_correct`, `stats_percentile` (rank = `round(p/100 * count + 0.5)`),
   `stats_value_at` (Lua `latency(i)` call), `stats_popcount` (`#latency`).
 
-### Lua API (must remain compatible — see `SCRIPTING` + `scripts/`)
+### Lua API (must remain compatible — see `docs/user/scripting/lua.md` + `scripts/`)
 
 - Global `wrk` table: `scheme`, `host`, `port`, `method`, `path`, `headers`,
   `body`, `thread`; functions `wrk.format([method, path, headers, body])`,
@@ -169,7 +169,7 @@ one Lua runtime per binary). `engine-stub` exists for test-only builds.
   capability honesty, error propagation). An engine that passes is considered
   compatible; the suite is also the LuaJIT regression net.
 - **Third-party story:** implement `ScriptEngine` against `wrkrs-engine`,
-  register it on the runner, ship your own binary. Documented in `ENGINES.md`.
+  register it on the runner, ship your own binary. Documented in `docs/user/engines.md`.
 - **Known trade-offs:** QuickJS is an interpreter — per-request callbacks cap
   throughput vs LuaJIT (document for users); `-e lua54` requires a build with
   `--features engine-lua54` (clear error message says so).

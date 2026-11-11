@@ -71,8 +71,10 @@ jobs:
           triple="${{ matrix.arch }}-unknown-linux-gnu"
           strip target/release/wrkrs
           mkdir -p dist "stage/wrkrs-$version-$triple"
-          cp target/release/wrkrs README.md ENGINES.md SCRIPTING LICENSE NOTICE \
+          cp target/release/wrkrs README.md LICENSE NOTICE \
             "stage/wrkrs-$version-$triple/"
+          cp docs/user/engines.md "stage/wrkrs-$version-$triple/ENGINES.md"
+          cp docs/user/scripting/lua.md "stage/wrkrs-$version-$triple/SCRIPTING"
           tar -C stage -czf "dist/wrkrs-$version-$triple.tar.gz" \
             "wrkrs-$version-$triple"
 
@@ -171,8 +173,10 @@ jobs:
           binary="target/$triple/release/wrkrs"
           strip "$binary"
           mkdir -p dist "stage/wrkrs-$version-$triple"
-          cp "$binary" README.md ENGINES.md SCRIPTING LICENSE NOTICE \
+          cp "$binary" README.md LICENSE NOTICE \
             "stage/wrkrs-$version-$triple/"
+          cp docs/user/engines.md "stage/wrkrs-$version-$triple/ENGINES.md"
+          cp docs/user/scripting/lua.md "stage/wrkrs-$version-$triple/SCRIPTING"
           tar -C stage -czf "dist/wrkrs-$version-$triple.tar.gz" \
             "wrkrs-$version-$triple"
       - uses: actions/upload-artifact@v4
@@ -206,8 +210,10 @@ jobs:
           triple="${{ matrix.arch }}-apple-darwin"
           strip target/release/wrkrs
           mkdir -p dist "stage/wrkrs-$version-$triple"
-          cp target/release/wrkrs README.md ENGINES.md SCRIPTING LICENSE NOTICE \
+          cp target/release/wrkrs README.md LICENSE NOTICE \
             "stage/wrkrs-$version-$triple/"
+          cp docs/user/engines.md "stage/wrkrs-$version-$triple/ENGINES.md"
+          cp docs/user/scripting/lua.md "stage/wrkrs-$version-$triple/SCRIPTING"
           tar -C stage -czf "dist/wrkrs-$version-$triple.tar.gz" \
             "wrkrs-$version-$triple"
       - uses: actions/upload-artifact@v4
