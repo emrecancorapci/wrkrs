@@ -138,7 +138,8 @@ small commits, every commit green standalone.
 ### P2 — the full API
 
 > Note (2.0 planning): P2 also carries the typed test API from
-> the V8 phase in PLAN.md, corrected and uncorrected latency,
+> the V8 phase in docs/dev/PLAN.md, corrected, uncorrected, and
+> send-time latency (`latency_uncorrected`, `latency_send_time`),
 > diagnostics, and compare/threshold results in assertion-friendly
 > types. It depends on phases V9-V12 landing first.
 

@@ -6,6 +6,14 @@ rate the way wrk2 does, measuring latency from the intended send
 rather than patching it up after the fact the way wrk's
 approximate average-interval correction does.
 
+Sequencing (decided): a 2.x feature after the V5 flip, it
+depends on V9 only, the schema policy that admits its fields.
+`latency` keeps its wrk-compatible corrected meaning in every
+mode; the send-time distribution lives in a separate field,
+`latency_send_time`, which matches the snake_case multi-word
+convention already in `json.rs` (`duration_us`,
+`requests_per_s`, `within_1_stdev`).
+
 ## The problem
 
 wrkrs is closed loop only. A connection sends its next burst when
@@ -49,10 +57,10 @@ approximation, which has two limits:
   `threads * 1_000_000 / rate` microseconds, rounded residue
   carried forward so the total rate stays honest).
 - Decided: `-R` with `-o legacy` is refused with a clear error
-  naming a non-legacy mode, and until the V5 flip makes modern
-  the default that means a rate run names its output mode
-  explicitly. Rationale: legacy is a byte-compatibility promise,
-  refusing is easy to loosen later, the reverse would be
+  naming a non-legacy mode. V10 ships after the V5 flip, so the
+  default output is already modern and the refusal only bites an
+  explicit `-o legacy`. Rationale: legacy is a byte-compatibility
+  promise, refusing is easy to loosen later, the reverse would be
   breaking.
 
 ### Loop model
@@ -76,19 +84,31 @@ approximation, which has two limits:
 A rate run can report three latency numbers, and which is
 primary per output mode is part of the contract:
 
-| Number | Meaning | Present in |
-| --- | --- | --- |
-| wrk-style corrected | histogram after the average-interval `correct()` patch-up | closed loop |
-| uncorrected | raw histogram as recorded, before any correction | both loops |
-| send-time | open loop, latency measured from the intended send time | `-R` runs |
+| Number | Field | Meaning | Present in |
+| --- | --- | --- | --- |
+| wrk-style corrected | `latency` | histogram after the average-interval `correct()` patch-up | both loops |
+| uncorrected | `latency_uncorrected` | raw histogram as recorded, before any correction | both loops |
+| send-time | `latency_send_time` | open loop, latency measured from the intended send time | `-R` runs only |
 
-- json: `latency` is the primary block and is mode-dependent,
-  wrk-style corrected in the closed loop, send-time under `-R`,
-  which needs no further patch-up; `latency_uncorrected` is
-  always the raw histogram, in both loops.
-- modern: the primary distribution prints first, same rule as
-  json `latency`, the other labeled beneath it.
-- html: same primary as json, both series charted.
+`latency` never changes meaning, retype or semantic shift would
+violate the V9 additive-only rule, so the send-time distribution
+is a separate field and which field is primary is a display and
+documentation matter:
+
+- json: all three blocks present under `-R`, `latency` corrected
+  and unchanged; for rate-run analysis the docs and the V8 API
+  point at `latency_send_time` as the primary lens, both fields
+  always available. In a closed-loop run `latency_send_time` is
+  absent, decided: there is no send schedule to measure from, so
+  a value would be fabricated, and `json.rs` already carries the
+  skip-when-absent convention for optional stats fields
+  (`skip_serializing_if` on the percentiles), which the
+  additive-only policy permits as absence to presence.
+- modern: under `-R` the send-time distribution prints first and
+  labeled as the primary lens, `latency` and `latency_uncorrected`
+  beneath it; closed loop unchanged.
+- html: same arrangement, the send-time series leading the chart
+  under `-R`.
 - legacy: never sees a rate run, the refusal is decided above;
   the closed loop prints the wrk-style corrected histogram
   exactly as today.
@@ -97,10 +117,13 @@ Other schema fields under the V9 policy:
 
 - `mode`: `{ "loop": "closed" | "open", "rate": <u64 | null>,
   "correction": "wrk-interval" | "send-time" }`.
-- `latency`: the primary block, mode-dependent as above.
+- `latency`: the wrk-compatible corrected block, unchanged in
+  meaning in every mode.
 - `latency_uncorrected`: the raw measured view, always.
-- `modern.rs`: both distributions printed, the primary first.
-  `html.rs`: the second series on the chart.
+- `latency_send_time`: the open-loop distribution, `-R` runs
+  only, absent in closed-loop reports.
+- `modern.rs` and `html.rs`: send-time leading under `-R`, the
+  corrected and raw views alongside.
 
 ### Mode naming, stated unambiguously
 
@@ -115,10 +138,9 @@ Other schema fields under the V9 policy:
 
 - No `-R` changes nothing anywhere; the golden and e2e legs stay
   green untouched.
-- `-o legacy` never sees a rate run: `-R` with `-o legacy`, or
-  with the legacy default of 1.x before the V5 flip, fails with
-  the documented error. The closed loop through legacy is
-  byte-identical as always.
+- `-o legacy` never sees a rate run: `-R` with `-o legacy`
+  fails with the documented error. The closed loop through legacy
+  is byte-identical as always.
 - Comparison legs in `tools/`, following the `script_e2e.py`
   convention of comparing when the reference binary is present:
   closed loop against a C `wrk` (already covered by the existing
@@ -145,9 +167,10 @@ Other schema fields under the V9 policy:
    ceiling.
 4. `connection.rs`: mode-aware `started` — intended send time
    under a rate, actual burst start otherwise.
-5. `json.rs` + `modern.rs` + `html.rs`: `mode` and
-   `latency_uncorrected`, both distributions with the primary
-   first, golden updates.
+5. `json.rs` + `modern.rs` + `html.rs`: `mode`,
+   `latency_uncorrected`, and `latency_send_time` (absent in
+   closed-loop json), `latency` unchanged in meaning, send-time
+   leading the modern and html views under `-R`, golden updates.
 6. `tools/rate_e2e.py`: fixed-rate assertions against the local
    harness, wrk2 comparison leg.
 7. Docs: README options, AGENTS.md behavior notes, the mode
@@ -156,17 +179,21 @@ Other schema fields under the V9 policy:
 ## Acceptance
 
 Against the local harness with a deliberately injected 100 ms
-stall: `-R 1000` holds ~1000 req/s while the send-time percentiles
-show the stall and the uncorrected ones mostly do not; `-R` with
-`-o legacy`, and `-R` under the 1.x legacy default, both fail
-with the documented error; a run without `-R` produces
-byte-identical output to the current binary; with a wrk2 binary
-present the achieved rate and send-time p99 agree within the
-documented tolerance.
+stall: `-R 1000` holds ~1000 req/s while the `latency_send_time`
+percentiles show the stall and the `latency_uncorrected` ones
+mostly do not, `latency` still carrying the corrected numbers;
+the json of a rate run carries `mode`, `latency`,
+`latency_uncorrected`, and `latency_send_time`, a closed-loop
+run omits `latency_send_time`; `-R` with `-o legacy` fails with
+the documented error; a run without `-R` produces byte-identical
+output to the current binary; with a wrk2 binary present the
+achieved rate and send-time p99 agree within the documented
+tolerance.
 
 ## Risks and open questions
 
-- Effort **L**, the largest pre-2.0 phase.
+- Effort **L**, a 2.x phase after the V5 flip, the largest of
+  them.
 - Intended-send bookkeeping is per queued request, not per
   connection; memory is bounded by `-c` times pipeline depth but
   the accounting must not slow the hot path.

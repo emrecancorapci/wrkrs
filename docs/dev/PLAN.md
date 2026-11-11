@@ -11,17 +11,19 @@ is pushed without review.
 ## Order of work
 
 Numeric order is no longer execution order. V1-V4 are done. The
-2.0 flip is gated narrowly: V9 versions the report and V10 adds
-the rate mode and the latency fields the modern layout prints, so
-those two land before V5. Diagnostics and comparison are opt-in
-features that ship on either side of the flip and never block it.
-From there the line runs:
+2.0 flip is gated on V9 alone: V9 versions the report that
+machine consumers parse, while the modern text layout is a human
+format that carries no stability guarantee, so the later phases
+may add rows to it after 2.0 without a semver break. The rate
+mode moves behind the flip as a 2.x feature. From there the line
+runs:
 
 1. V9 the report schema policy, small and first, it guards every
    report shape change below
-2. V10 constant-rate mode with send-time latency accounting
-3. V5 modern becomes the default, the 2.0 bump, gated on V9-V10
+2. V5 modern becomes the default, the 2.0 bump, gated on V9 only
    (see the note in the phase)
+3. V10 constant-rate mode with send-time latency accounting, a
+   2.x feature, depends on V9
 4. V11 load-generator self-diagnostics, opt-in, additive-only
    under the V9 schema policy
 5. V12 regression comparison and thresholds, opt-in,
@@ -96,11 +98,15 @@ machinery the engine already needed, so V2 narrows to templating.
 - [ ] the 2.0 version bump rides with this, the semver promise for
       the default flip
 
-> Note (order of work): V9 and V10 land before this flip, V9
-> versions the report and V10 adds the rate mode and the latency
-> fields the modern layout prints. V11 and V12 ship as opt-in
-> features on either side of the flip and do not gate it. The
-> narrow gate is the recorded maintainer decision.
+> Note (order of work): V9 lands before this flip, it versions
+> the report that machine consumers parse. The gate is V9 only,
+> the recorded maintainer decision, reversing the earlier V9-V10
+> gate: the modern text layout is a human format and carries no
+> stability guarantee beyond the legacy-compatible fields, so
+> later phases may add rows to it without a semver break, and the
+> guarantee for tools is `-o json` under the V9 policy. V10 moves
+> after the flip as a 2.x feature, V11 and V12 ship as opt-ins
+> and none of them gates 2.0.
 
 ## Phase V6 — the python engine
 
@@ -143,7 +149,11 @@ detail lives in PLAN-packaging.md, which is the plan for this line.
 - [ ] P1 the contract and scaffold: `run()` over `-o json`, tests,
       the `node` CI job, the npm name claimed
 - [ ] P2 the full API: config file options, abort, error taxonomy,
-      types, the bin shim
+      types, the bin shim, and the typed test API,
+      `latency_uncorrected`, `latency_send_time`, `diagnostics`,
+      and a compare helper with threshold results in
+      assertion-friendly types, tested over fixtures from each
+      phase (depends on V9-V12)
 - [ ] P3 platform packages: the six release legs as
       `optionalDependencies`, resolution, clean failure
 - [ ] P4 the publish pipeline: release-published gated, checksum
@@ -153,14 +163,10 @@ detail lives in PLAN-packaging.md, which is the plan for this line.
 > Note (2.0 planning): the embeddable test API, a typed
 > `run(options) -> report` with runner-friendly assertions such as
 > `expect(report.p99).toBeLessThan(50)`, belongs in P2 rather
-> than a separate phase. P2 must expose the corrected and
-> uncorrected latency of V10, the diagnostics of V11, and the
-> compare and threshold results of V12, so it depends on V9-V12.
-
-- [ ] P2 the typed test API: `latency_uncorrected`,
-      `diagnostics`, and a compare helper with threshold results
-      in assertion-friendly types, tested over fixtures from each
-      phase (depends on V9-V12)
+> than a separate phase. P2 must expose the corrected,
+> uncorrected, and send-time latency of V10, the diagnostics of
+> V11, and the compare and threshold results of V12, so it
+> depends on V9-V12.
 
 ## Phase V9 — the report schema policy
 
@@ -182,9 +188,9 @@ which fields a document is allowed to carry.
       added, never renamed, retyped, or removed, consumers ignore
       unknown fields, only a non-additive change bumps `schema`
 - [ ] name the fields the later phases add so the contract is
-      settled before they land: V10 `mode` and
-      `latency_uncorrected`, V11 `diagnostics`, V12 a compare
-      document with its own `schema`
+      settled before they land: V10 `mode`,
+      `latency_uncorrected`, and `latency_send_time`, V11
+      `diagnostics`, V12 a compare document with its own `schema`
 - [ ] PLAN-packaging.md: the report field list gains `schema`, the
       distinction from `version` stated
 - [ ] acceptance: a golden test parses an old report fixture
@@ -208,8 +214,13 @@ the correction in `runner.rs` mutates the only histogram in place
 so no output mode or `done()` callback can see the uncorrected
 numbers, and nothing can hold a request rate the way wrk2 does.
 A rate run reports three numbers, wrk-style corrected,
-uncorrected, and send-time; send-time is primary in modern, json,
-and html, and `-o legacy` refuses `-R`. The design lives in
+uncorrected, and send-time: `latency` keeps its wrk-compatible
+corrected meaning in every mode, `latency_uncorrected` carries
+the raw histogram, and the new `latency_send_time` field carries
+the send-time distribution and is the primary lens for rate runs
+in modern, json, and html display, a display matter, not a field
+replacement; `-o legacy` refuses `-R`. A 2.x feature after the
+V5 flip, it depends on V9 only. The design lives in
 PLAN-constant-rate.md.
 
 - [ ] snapshot the raw latency histogram in `runner.rs::execute()`
@@ -225,11 +236,12 @@ PLAN-constant-rate.md.
       from responses, connections opened on demand up to `-c`
 - [ ] send-time latency accounting in `connection.rs`: under a
       rate the clock starts at the intended send, not the write
-- [ ] the report surfaces behind the V9 policy: `mode` and
-      `latency_uncorrected` in `json.rs`, both distributions in
-      `modern.rs`, the second series in `html.rs`; `-R` with
-      `-o legacy` is refused with a clear error, decided, see
-      PLAN-constant-rate.md
+- [ ] the report surfaces behind the V9 policy: `mode`,
+      `latency_uncorrected`, and `latency_send_time` in `json.rs`,
+      `latency` unchanged in meaning everywhere, the send-time
+      distribution primary in `modern.rs` and `html.rs` under
+      `-R`; `-R` with `-o legacy` is refused with a clear error,
+      decided, see PLAN-constant-rate.md
 - [ ] e2e: a fixed-rate run against the local harness asserts the
       request count within tolerance and both percentiles, a
       `tools/` leg compares against a wrk2 binary when one is
@@ -244,10 +256,10 @@ PLAN-constant-rate.md.
       show the stall and the uncorrected ones do not, and a run
       without `-R` is byte-identical to the current binary
 
-  Notes: effort L, the largest pre-2.0 phase. Risks and open
-  questions, pipeline scripts under a rate, timeout accounting
-  when slow responses pile past the histogram limit, live in
-  PLAN-constant-rate.md.
+  Notes: effort L, a 2.x phase after the V5 flip, the largest of
+  them. Risks and open questions, pipeline scripts under a rate,
+  timeout accounting when slow responses pile past the histogram
+  limit, live in PLAN-constant-rate.md.
 
 ## Phase V11 — load-generator self-diagnostics
 
@@ -283,8 +295,11 @@ PLAN-diagnostics.md.
       nothing, and stdout is byte-identical with diagnostics on
       and off
 
-  Notes: effort M. Lands after the V5 flip and never gates it,
-  the reporting rides the opt-in `--diagnostics` flag, everything
+  Notes: effort M. Lands after the V5 flip and never gates it.
+  The reporting rides the opt-in `--diagnostics` flag at first;
+  enabling stderr warnings by default, stdout still untouched, is
+  a later decision once the false-positive rules have proven
+  themselves in practice, deliberately not scheduled. Everything
   it adds to the report is additive-only under the V9 schema
   policy. Open question: the hot-path cost of timing, in
   PLAN-diagnostics.md.
@@ -307,6 +322,9 @@ cannot give them. The design lives in PLAN-compare.md.
 - [ ] aggregation: per-field medians and a seeded bootstrap
       interval, the statistic per field fixed and documented,
       error rate pooled not medianed
+- [ ] a minimum run count guard: compare warns when fewer than 5
+      runs are on either side (proposed), bootstrap intervals
+      from very few runs mislead
 - [ ] thresholds and exit codes: `--threshold 'p99<50ms'`,
       `--threshold 'error_rate<0.1%'`, exit 0 pass, 1 threshold
       failed, 2 usage or input error
@@ -334,7 +352,10 @@ response and done capture, setup and init transfer, capabilities,
 error paths, and `tools/script_e2e.py` runs the nine bundled
 scripts against a local server with a C wrk comparison leg, but a
 user asking "will my wrk script run" deserves a tested answer per
-API. The curation and the tables live in PLAN-lua-compat.md.
+API. The phase follows V10 because `done()` receives the latency
+and rate histograms, `report.rs` hands them to `call_done`, and
+V10 changes what those carry. The curation and the tables live in
+PLAN-lua-compat.md.
 
 - [ ] curate the real-world script list, community patterns
       first, per-script license notes, in-repo ports where a
@@ -348,6 +369,9 @@ API. The curation and the tables live in PLAN-lua-compat.md.
 - [ ] new engine-agnostic cases in `wrkrs-engine-tests` for the
       API edges the examples miss, extending the suite, no
       parallel one
+- [ ] a conformance case that `done()` still receives the
+      corrected histogram, both in a closed-loop run and under
+      `-R`
 - [ ] new behavioral cases in `tools/script_e2e.py` with wrk
       comparison assertions where the C binary is present
 - [ ] acceptance: every curated script passes e2e on wrkrs and,
@@ -361,19 +385,32 @@ API. The curation and the tables live in PLAN-lua-compat.md.
 
 ## Phase V14 — HTTP/2
 
-Speak the protocol modern servers negotiate. wrkrs speaks
-HTTP/1.1 only: the response framer in `parser.rs` is httparse
-based, `tls.rs` builds its rustls config with no ALPN so https
-always lands on 1.1, and one TCP connection per `-c`/`-t` slot
-carries one in-flight burst with a pipeline depth. TODO.md
+Speak the protocol modern servers negotiate, on request. wrkrs
+speaks HTTP/1.1 only: the response framer in `parser.rs` is
+httparse based, `tls.rs` builds its rustls config with no ALPN so
+https always lands on 1.1, and one TCP connection per `-c`/`-t`
+slot carries one in-flight burst with a pipeline depth. TODO.md
 already names the shape, an h2 engine is a second framing layer
-beside the response framer. This is a 2.x phase, after the 2.0
-line, HTTP/3 an explicitly later phase after it. The design
-lives in PLAN-http2.md.
+beside the response framer. HTTP/1.1 stays the default for every
+run: wrk is 1.1 only, and silently moving existing https users
+onto h2 would cut their results off from their own history, so h2
+is requested with an explicit `--http2`. This is a 2.x phase,
+after the 2.0 line, HTTP/3 an explicitly later phase after it.
+The design lives in PLAN-http2.md.
 
-- [ ] ALPN in `TlsSetup`: offer `h2` and `http/1.1`, pick the
-      connection flavor from the negotiated protocol, the no-ALPN
-      path stays 1.1
+- [ ] `--http2` in `cli.rs`, long-only with no short form: `-H`
+      is wrk's header flag and stays; verified against the option
+      table in `cli.rs` and the glibc prefix matcher in
+      `getopt.rs`, no existing short or long name collides with
+      `http2`
+- [ ] ALPN in `TlsSetup` behind `--http2`: offer `h2` and
+      `http/1.1` only when the flag is set, pick the connection
+      flavor from the negotiated protocol; without the flag the
+      TLS config and the wire behavior are unchanged from today
+- [ ] `--http2` without h2: fail with a clear error naming what
+      the server negotiated, and refuse `--http2` on a plain
+      http URL, h2c prior knowledge is out of scope for the
+      first cut (decided, see PLAN-http2.md)
 - [ ] the h2 framing layer beside `ResponseFramer`: a connection
       state machine over the same `Event` surface with streams in
       place of the pipeline counter
@@ -390,15 +427,18 @@ lives in PLAN-http2.md.
 - [ ] the capability model note: `Capabilities` stays script
       level, protocol choice is runner level, the pipeline
       probe's meaning under h2 decided and written down
+- [ ] docs: README and the engines doc state that h2 is opt-in
+      and why, comparability with wrk history, wrk is 1.1 only
 - [ ] e2e: a local h2-capable server harness in `tools/`, the
       full existing suite green on the 1.1 path
-- [ ] acceptance: an h2 target negotiated by ALPN completes a run
-      with per-stream stats through every output mode, and a 1.1
-      target behaves exactly as before, byte for byte in legacy
+- [ ] acceptance: an h2 target with `--http2` negotiates h2 and
+      completes a run with per-stream stats through every output
+      mode, and a run without `--http2` behaves exactly as before,
+      byte for byte in legacy
 
   Notes: effort L, the largest phase in the file. Open questions,
-  the framing dependency, h2c prior knowledge, pipelined scripts
-  under h2, in PLAN-http2.md.
+  the framing dependency and pipelined scripts under h2, in
+  PLAN-http2.md.
 
 ## Not planned
 

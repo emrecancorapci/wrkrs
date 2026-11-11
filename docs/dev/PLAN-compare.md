@@ -73,7 +73,10 @@ aggregation, and a verdict.
 - Confidence: a 95% bootstrap interval over runs with a fixed
   seed, deterministic in CI; with fewer than 5 runs the interval
   is reported as unbounded on that side and threshold behavior
-  falls back to the point statistic (documented).
+  falls back to the point statistic (documented), and compare
+  warns that the verdict rests on too few runs, because
+  bootstrap intervals from very few runs mislead (proposed
+  threshold: 5).
 
 ### Thresholds and exit codes
 
@@ -115,7 +118,8 @@ never masquerades as a run report.
 3. `--runs`/`--warmup` in the run path, NDJSON writing through
    `-O`.
 4. Aggregation module: per-field statistics, seeded bootstrap,
-   unit tests over synthetic run sets.
+   unit tests over synthetic run sets, and the minimum run count
+   warning when fewer than 5 runs are compared.
 5. Threshold parsing and evaluation, the exit code contract,
    unit tests including malformed input.
 6. Terminal table and the JSON compare document with golden

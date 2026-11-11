@@ -35,16 +35,36 @@ sequenced after the 2.0 line settles, not inside it.
 
 ## Design
 
-### Negotiation
+### Negotiation and opt-in
 
-- `TlsSetup` offers `h2` then `http/1.1` via ALPN; after the
-  handshake `alpn_protocol()` selects the connection flavor per
-  slot. No ALPN (plain http, or a server that ignores it) keeps
-  the 1.1 path exactly as today.
-- Cleartext h2c prior-knowledge behind an explicit opt-in flag,
-  because there is nothing to negotiate from (flag name decided
-  in the phase, `--http2` proposed). Open question whether it
-  ships at all in the first cut.
+- HTTP/1.1 stays the default for every run. wrk is 1.1 only, and
+  existing https users' results must stay comparable with their
+  own history, so h2 is requested with an explicit `--http2` and
+  is never implied by the URL or the server.
+- `--http2` is long-only, no short form. `-H` is wrk's header
+  flag and stays; verified against the option table in `cli.rs`
+  and the glibc exact-or-unambiguous-prefix matcher in
+  `getopt.rs` — no existing short or long name collides with
+  `http2` (`help` and `header` diverge after `he`, and nothing
+  else begins with `ht`).
+- With `--http2`, `TlsSetup` offers `h2` then `http/1.1` via
+  ALPN; after the handshake `alpn_protocol()` selects the
+  connection flavor per slot. Without the flag no ALPN extension
+  is sent, the TLS config and the wire behavior are unchanged
+  from today.
+- Decided: when `--http2` is set and the server does not
+  negotiate h2, the run fails with a clear error naming what was
+  negotiated. The flag is an explicit request for h2 numbers;
+  silent fallback to 1.1 would hand the user 1.1 measurements
+  labeled as h2, reintroducing exactly the comparability problem
+  the opt-in exists to avoid. A separate explicit fallback flag
+  can be added later without breaking anyone; removing a silent
+  fallback would be breaking. (Open: whether that fallback flag
+  is ever worth carrying.)
+- Decided: `--http2` on a plain http URL (h2c prior knowledge) is
+  out of scope for the first cut and refused with a clear error.
+  There is nothing to negotiate from, and the first cut serves
+  the https case.
 
 ### Connections and streams
 
@@ -104,35 +124,46 @@ sequenced after the 2.0 line settles, not inside it.
 - Every 1.1 path (plain, TLS without h2, h2 refused) behaves
   exactly as today; the entire existing suite and the wrk
   comparison legs must stay green untouched.
-- No existing flag changes meaning. New surface: `--streams` and
-  possibly `--http2`, both opt-in, both absent by default.
+- No existing flag changes meaning. New surface: `--http2` and
+  `--streams`, both opt-in, both absent by default; a run without
+  `--http2` is identical to today's binary, TLS config, ALPN,
+  framing, and all.
+- The README and engines doc updates state why h2 is opt-in:
+  comparability with wrk history, wrk is 1.1 only.
 - `-o legacy` under h2 prints the standard layout over the
   per-stream histogram; byte-format compatibility is about the
   layout, not the protocol underneath.
 
 ## Tasks
 
-1. ALPN in `TlsSetup` with protocol selection at slot level, 1.1
-   default verified unchanged.
-2. The h2 framing layer: connection state machine, streams, flow
+1. `--http2` in `cli.rs`, long-only, no short form, with the
+   collision check recorded against the option table and the
+   prefix matcher, and the no-h2 failure and plain-http refusal
+   errors.
+2. ALPN in `TlsSetup` gated on `--http2`, with protocol selection
+   at slot level, the no-flag path verified byte-identical.
+3. The h2 framing layer: connection state machine, streams, flow
    control, GOAWAY, over the existing `Event` surface.
-3. Request mapping from engine bytes (httparse extraction,
+4. Request mapping from engine bytes (httparse extraction,
    header rules) with unit tests over the mapping table.
-4. `--streams` flag, server SETTINGS discovery, the concurrency
+5. `--streams` flag, server SETTINGS discovery, the concurrency
    scheduler and its cap.
-5. Stats per stream, timeout restatement, bytes accounting note.
-6. `tools/h2_e2e.py`: a local h2-capable server harness (the
+6. Stats per stream, timeout restatement, bytes accounting note.
+7. `tools/h2_e2e.py`: a local h2-capable server harness (the
    Python harness today is 1.1 only; the server side needs an h2
    speaking twin or a small Rust test server, decided in phase).
-7. Docs: README options, the engines.md capability paragraph,
-   AGENTS.md notes, the `-c` semantics statement.
+8. Docs: README options and the engines.md capability paragraph
+   stating that h2 is opt-in and why, comparability with wrk
+   history; AGENTS.md notes; the `-c` semantics statement.
 
 ## Acceptance
 
-An https target that negotiates h2 via ALPN completes a run with
-per-stream stats through every output mode, `--streams` bounds
-observed concurrency to the server's setting, and every existing
-1.1 and legacy test passes byte for byte.
+An h2 target with `--http2` negotiates h2 and completes a run
+with per-stream stats through every output mode, `--streams`
+bounds observed concurrency to the server's setting, a run
+without `--http2` behaves exactly as before byte for byte in
+legacy, and `--http2` against a 1.1-only server and against a
+plain http URL both fail with the documented errors.
 
 ## Risks and open questions
 
@@ -147,6 +178,8 @@ observed concurrency to the server's setting, and every existing
   beside the stream-shaped `Socket` seam and the rustls QUIC
   integration, a transport project on its own. It is not
   scheduled here beyond keeping the seams open.
-- Open: h2c prior-knowledge flag or not. Open: default `--streams`
-  cap. Open: whether pipelined scripts under h2 are honored or
-  refused. Open: the h2 test server shape.
+- Open: whether an explicit fallback flag for `--http2` without
+  h2 is ever wanted (fail-closed is decided for the first cut).
+- Open: default `--streams` cap. Open: whether pipelined scripts
+  under h2 are honored or refused. Open: the h2 test server
+  shape.

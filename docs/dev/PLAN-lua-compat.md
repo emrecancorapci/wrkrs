@@ -97,6 +97,12 @@ normative for contributors:
 
 ### Extend, do not duplicate
 
+The phase follows V10 because `done()` receives the latency and
+rate histograms — `report.rs` `call_done` hands them to the
+script — and V10 changes what those carry. The suite must pin
+that `done()` still sees the corrected histogram in a closed-loop
+run and under `-R`.
+
 - Engine-agnostic API-edge cases go into `wrkrs-engine-tests` so
   the Lua 5.4 and QuickJS legs run them too.
 - Behavioral cases with wire assertions go into
@@ -109,7 +115,9 @@ normative for contributors:
 1. The curation PR: candidate script list with provenance and
    license notes, decisions recorded.
 2. Port or vendor the scripts into `scripts/` with e2e cases.
-3. Engine-agnostic API-edge cases in the conformance suite.
+3. Engine-agnostic API-edge cases in the conformance suite,
+   including a case that `done()` still receives the corrected
+   histogram, closed loop and under `-R`.
 4. The supported-surface table published beside the Lua
    scripting doc.
 5. The known-differences document, linked from README and the

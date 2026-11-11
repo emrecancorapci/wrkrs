@@ -7,8 +7,10 @@ bottleneck.
 Sequencing (decided): V11 lands after the V5 flip and never gates
 it, shipping as an opt-in feature behind the `--diagnostics`
 flag. Everything it adds to the report is additive-only under the
-V9 schema policy; always-on reporting is a later decision once
-the false-positive record is proven.
+V9 schema policy. Enabling stderr warnings by default, stdout
+still untouched, is a later decision once the false-positive
+rules have proven themselves in practice, deliberately not
+scheduled.
 
 ## The problem
 
