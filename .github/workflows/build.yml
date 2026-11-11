@@ -3,7 +3,32 @@ name: build
 on:
   push:
 
+# Rapid pushes replace their own runs, the default branch always
+# completes.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
+  # Lint once per feature set on Linux, clippy results do not depend
+  # on the platform and the slow macOS runners only pay for tests.
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features: ["", "--no-default-features --features engine-lua54,engine-quickjs"]
+    steps:
+      - uses: actions/checkout@v7
+      - name: install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - uses: Swatinem/rust-cache@v2
+      - name: lint
+        run: just lint "${{ matrix.features }}"
+
+  # Tests per platform and feature set, the release profile compiles
+  # in the release workflow before anything ships.
   rust:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -11,16 +36,11 @@ jobs:
         os: [macos-latest, ubuntu-latest]
         features: ["", "--no-default-features --features engine-lua54,engine-quickjs"]
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v7
       - name: install just
         uses: taiki-e/install-action@v2
         with:
           tool: just
-      - name: lint
-        run: just lint "${{ matrix.features }}"
-      - name: build
-        run: just build "${{ matrix.features }}"
+      - uses: Swatinem/rust-cache@v2
       - name: test
         run: just test "${{ matrix.features }}"
