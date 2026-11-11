@@ -118,8 +118,8 @@ requests = 1000
 ```
 
 The JSON shape carries the same fields as nested objects.
-`scripts/bench.toml`, `scripts/stop.toml`, and `scripts/counter.toml`
-are runnable examples.
+`scripts/bench.toml`, `scripts/stop.toml`, `scripts/counter.toml`,
+and `scripts/auth.toml` are runnable examples.
 
 Templating:
 
@@ -140,6 +140,22 @@ Templating:
   exactly `{{n}}` or `{{rand}}`, anything else fails the run with
   the field named. Methods, header names, and the URL path are not
   template fields, `-H` values stay literal
+
+Capture rules:
+
+- `[capture]` copies one response header onto later requests, the
+  auth.lua flow as data. While no response carried the header every
+  request goes to the `[request]` path, the first response that
+  carries it switches the run to `path` with the value set as the
+  `to` request header
+- `header` is required, `path` and `to` default to keeping the
+  request path and the header name, so a rule with only `header`
+  covers the session cookie shape
+- the capture lands once per thread, the header matches case
+  insensitively, and later responses never refresh the value
+- a capture rule makes the file dynamic and turns response parsing
+  on, the wants response capability, so the file format stays
+  honest about its cost
 
 Rules:
 

@@ -42,11 +42,11 @@ machinery the engine already needed, so V2 narrows to templating.
 
 ## Phase V3 — capture rules
 
-- [ ] `[capture]`: copy a response header from one path onto the
+- [x] `[capture]`: copy a response header from one path onto the
       headers of later requests, the auth.lua flow without a script
-- [ ] a capture rule turns response buffering on, the wants response
+- [x] a capture rule turns response buffering on, the wants response
       capability, so the file format stays honest about its cost
-- [ ] acceptance: the auth flow as a config file passes the same
+- [x] acceptance: the auth flow as a config file passes the same
       e2e assertions as `auth.lua`
 
 ## Phase V4 — the html reporter
