@@ -1,0 +1,10 @@
+# example benchmark file which demonstrates templating
+# the request path and a header for each request
+#
+# NOTE: each wrk thread renders its own counter
+
+[request]
+path = "/{{n}}"
+
+[request.headers]
+X-Counter = "{{n}}"

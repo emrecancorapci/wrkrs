@@ -311,6 +311,40 @@ def main():
     if not ok:
         failures += 1
 
+    # The templated twin of counter.lua: the counter tag drives the
+    # path and a header per request, the same dynamic shape on the
+    # wire without a script.
+    with seen_lock:
+        for key in seen:
+            seen[key].clear()
+    result, _ = run(WRKRS, port, "scripts/counter.toml")
+    ok = check("counter.toml: exit zero", result.returncode == 0, result.stderr[-200:])
+    ok &= check(
+        "counter.toml: completed requests",
+        wrkrs_requests(result) > 0,
+        result.stderr[-200:],
+    )
+    ok &= check("counter.toml: header values seen", len(seen["counters"]) > 3)
+    # The counter starts at one and the thread zero pipeline probe
+    # consumes the first render, so the wire carries 2, 3, 4 first.
+    # counter.lua starts its own counter at zero, so its probe
+    # leaves 1, 2, 3 on the wire.
+    ok &= check(
+        "counter.toml: header counts up from two",
+        seen["counters"][:3] == [2, 3, 4],
+        seen["counters"][:5],
+    )
+    ok &= check(
+        "counter.toml: paths carry the counter",
+        all(
+            path == f"/{counter}"
+            for path, counter in zip(seen["paths"], seen["counters"])
+        ),
+        seen["paths"][:5],
+    )
+    if not ok:
+        failures += 1
+
     # A broken benchmark file fails the run with the file named in
     # the error, data files do not fall back to defaults.
     broken = os.path.join(tempfile.gettempdir(), "wrkrs-e2e-broken.toml")
