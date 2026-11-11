@@ -58,8 +58,11 @@
 
     -o, --output:      report format: legacy (the byte compatible wrk
                        layout, the default), modern (a clean layout with
-                       the percentile rows always present), or json (one
-                       machine readable object, latency in microseconds)
+                       the percentile rows always present), json (one
+                       machine readable object, latency in
+                       microseconds), or html (one self contained page,
+                       the JSON object with the latency distribution
+                       charted)
 
     -O, --output-file: write the report to a file instead of stdout;
                        stdout stays clean and a note goes to stderr

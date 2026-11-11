@@ -51,11 +51,11 @@ machinery the engine already needed, so V2 narrows to templating.
 
 ## Phase V4 — the html reporter
 
-- [ ] `-o html`: render the JSON shape into one self contained page,
+- [x] `-o html`: render the JSON shape into one self contained page,
       inline styles and scripts, no external assets and no network
-- [ ] the latency distribution charted, the totals and error blocks
+- [x] the latency distribution charted, the totals and error blocks
       in place, numbers identical to the JSON mode by construction
-- [ ] acceptance: golden test on a synthetic report, valid output
+- [x] acceptance: golden test on a synthetic report, valid output
       asserted with a parse
 
 ## Phase V5 — modern becomes the default
