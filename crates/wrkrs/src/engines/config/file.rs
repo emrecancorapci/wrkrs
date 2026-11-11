@@ -20,6 +20,10 @@ use super::template::Template;
 /// [request.headers]
 /// Content-Type = "application/x-www-form-urlencoded"
 ///
+/// [capture]
+/// header = "X-Token"
+/// path = "/resource"
+///
 /// [stop]
 /// requests = 1000
 /// ```
@@ -32,6 +36,9 @@ pub struct BenchFile {
     /// Request shaping, absent means the wrk defaults.
     #[serde(default)]
     pub request: RequestSpec,
+    /// One capture rule, absent means no capture.
+    #[serde(default)]
+    pub capture: Option<CaptureSpec>,
     /// Stop conditions, absent means run the full duration.
     #[serde(default)]
     pub stop: StopSpec,
@@ -51,6 +58,25 @@ pub struct RequestSpec {
     /// Headers layered over the `-H` values, document order.
     #[serde(default, deserialize_with = "ordered_pairs")]
     pub headers: Vec<(String, String)>,
+}
+
+/// The `[capture]` section.
+///
+/// The auth.lua flow as data: while no response carried the header
+/// yet, every request goes to the `[request]` path, the first
+/// response that carries it switches the run to `path` with the
+/// value set as the `to` request header.
+#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureSpec {
+    /// The response header to copy, required.
+    pub header: String,
+    /// The path of the requests after the capture, absent keeps the
+    /// `[request]` path.
+    pub path: Option<String>,
+    /// The request header that carries the captured value, absent
+    /// means the same name as `header`.
+    pub to: Option<String>,
 }
 
 /// The `[stop]` section.
@@ -125,6 +151,12 @@ impl BenchFile {
                 .any(|(_, value)| Template::detect(value))
     }
 
+    /// Whether the file renders per burst, templated fields or a
+    /// capture rule.
+    pub fn is_dynamic(&self) -> bool {
+        self.is_templated() || self.capture.is_some()
+    }
+
     /// Rejects values that would corrupt the wire format.
     ///
     /// A script can produce whatever bytes it wants, a data file
@@ -145,21 +177,10 @@ impl BenchFile {
             ));
         }
         if let Some(path) = &request.path {
-            if path != "*" && !path.starts_with('/') {
-                return Err(format!(
-                    "invalid path '{path}', the path must start with a slash"
-                ));
-            }
-            if path.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
-                return Err(format!("invalid path '{path}'"));
-            }
+            check_path("path", path)?;
         }
         for (name, value) in &request.headers {
-            if name.is_empty()
-                || name
-                    .bytes()
-                    .any(|byte| byte <= b' ' || byte == b':' || byte == 0x7f)
-            {
+            if !is_header_name(name) {
                 return Err(format!("invalid header name '{name}'"));
             }
             if Template::detect(name) {
@@ -174,11 +195,39 @@ impl BenchFile {
                 return Err(format!("invalid header value for '{name}'"));
             }
         }
+        if let Some(capture) = &self.capture {
+            if !is_header_name(&capture.header) {
+                return Err(format!("invalid capture header '{}'", capture.header));
+            }
+            if Template::detect(&capture.header) {
+                return Err(format!(
+                    "invalid capture header '{}', the capture header is not a template field",
+                    capture.header
+                ));
+            }
+            if let Some(to) = &capture.to {
+                if !is_header_name(to) {
+                    return Err(format!("invalid capture target '{to}'"));
+                }
+                if Template::detect(to) {
+                    return Err(format!(
+                        "invalid capture target '{to}', the capture target is not a template field"
+                    ));
+                }
+            }
+            if let Some(path) = &capture.path {
+                check_path("capture path", path)?;
+            }
+        }
         // Tags must name a known value, a typo would otherwise ride
         // the wire as literal text.
         for (field, value) in [
             ("request.path", request.path.as_deref()),
             ("request.body", request.body.as_deref()),
+            (
+                "capture.path",
+                self.capture.as_ref().and_then(|c| c.path.as_deref()),
+            ),
         ] {
             if let Some(value) = value {
                 Template::new(value)
@@ -196,6 +245,27 @@ impl BenchFile {
         }
         Ok(())
     }
+}
+
+/// Header name rules, shared by request headers and capture names.
+fn is_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name
+            .bytes()
+            .any(|byte| byte <= b' ' || byte == b':' || byte == 0x7f)
+}
+
+/// Path rules, shared by the request path and the capture path.
+fn check_path(field: &str, path: &str) -> Result<(), String> {
+    if path != "*" && !path.starts_with('/') {
+        return Err(format!(
+            "invalid {field} '{path}', the path must start with a slash"
+        ));
+    }
+    if path.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
+        return Err(format!("invalid {field} '{path}'"));
+    }
+    Ok(())
 }
 
 /// Collects a string to string map as pairs in document order.
@@ -489,6 +559,84 @@ mod tests {
         assert_eq!(
             file.validate().unwrap_err(),
             "invalid header name '{{n}}', header names are not template fields"
+        );
+    }
+
+    #[test]
+    fn parses_the_capture_section() {
+        let file = from_toml(
+            "[request]\npath = \"/authenticate\"\n[capture]\nheader = \"X-Token\"\n\
+             path = \"/resource\"\nto = \"Authorization\"\n",
+        );
+        let capture = file.capture.as_ref().expect("the capture section");
+        assert_eq!(capture.header, "X-Token");
+        assert_eq!(capture.path.as_deref(), Some("/resource"));
+        assert_eq!(capture.to.as_deref(), Some("Authorization"));
+        assert!(file.is_dynamic());
+        assert!(file.validate().is_ok());
+    }
+
+    #[test]
+    fn capture_path_and_to_are_optional() {
+        let file = from_toml("[capture]\nheader = \"Set-Cookie\"\n");
+        let capture = file.capture.as_ref().expect("the capture section");
+        assert_eq!(capture.path, None);
+        assert_eq!(capture.to, None);
+        assert!(file.is_dynamic());
+        assert!(file.validate().is_ok());
+    }
+
+    #[test]
+    fn json_files_carry_the_capture_section() {
+        let file: BenchFile = serde_json::from_str(
+            "{\"request\":{\"path\":\"/authenticate\"},\
+             \"capture\":{\"header\":\"X-Token\",\"path\":\"/resource\"}}",
+        )
+        .expect("json parses");
+        assert_eq!(file.capture.as_ref().expect("the rule").header, "X-Token");
+        assert!(file.is_dynamic());
+    }
+
+    #[test]
+    fn capture_rejects_unknown_fields_and_a_missing_header() {
+        assert!(toml::from_str::<BenchFile>("[capture]\nnope = 1").is_err());
+        assert!(toml::from_str::<BenchFile>("[capture]\npath = \"/resource\"").is_err());
+        assert!(serde_json::from_str::<BenchFile>("{\"capture\":{}}").is_err());
+        assert!(toml::from_str::<BenchFile>("[capture]\nheader = 7").is_err());
+    }
+
+    #[test]
+    fn capture_names_and_path_validate() {
+        let mut file = from_toml("[capture]\nheader = \"X-Token\"\n");
+        file.capture.as_mut().expect("the rule").header = "Bad Name".to_owned();
+        assert_eq!(
+            file.validate().unwrap_err(),
+            "invalid capture header 'Bad Name'"
+        );
+        file.capture.as_mut().expect("the rule").header = "{{n}}".to_owned();
+        assert_eq!(
+            file.validate().unwrap_err(),
+            "invalid capture header '{{n}}', the capture header is not a template field"
+        );
+        let mut file = from_toml("[capture]\nheader = \"X-Token\"\n");
+        file.capture.as_mut().expect("the rule").to = Some("Bad Name".to_owned());
+        assert_eq!(
+            file.validate().unwrap_err(),
+            "invalid capture target 'Bad Name'"
+        );
+        let mut file = from_toml("[capture]\nheader = \"X-Token\"\n");
+        file.capture.as_mut().expect("the rule").path = Some("resource".to_owned());
+        assert_eq!(
+            file.validate().unwrap_err(),
+            "invalid capture path 'resource', the path must start with a slash"
+        );
+        let file = from_toml("[capture]\nheader = \"X-Token\"\npath = \"/item/{{n}}\"\n");
+        assert!(file.validate().is_ok());
+        let file = from_toml("[capture]\nheader = \"X-Token\"\npath = \"/item/{{count}}\"\n");
+        assert!(
+            file.validate()
+                .unwrap_err()
+                .contains("invalid template in capture.path")
         );
     }
 

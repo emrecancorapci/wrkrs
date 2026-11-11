@@ -1,11 +1,11 @@
 //! The config engine, benchmark files instead of scripts.
 //!
 //! A TOML or JSON file shapes the load the way a static script would,
-//! with request fields and stop conditions as data, and light
-//! templating for the dynamic shapes. Files parse through one schema,
-//! see [`file`], template tags parse through [`template`], and both
-//! dispatch through the engine registry on the `.toml` and `.json`
-//! extensions.
+//! with request fields and stop conditions as data, light templating
+//! and one capture rule for the dynamic shapes. Files parse through
+//! one schema, see [`file`], template tags parse through [`template`],
+//! and both dispatch through the engine registry on the `.toml` and
+//! `.json` extensions.
 
 mod file;
 mod template;
@@ -25,14 +25,14 @@ use self::template::{Rng, Template};
 /// Engine driven by one benchmark file.
 ///
 /// Every thread builds its own instance from the same spec, so stop
-/// limits and the `{{n}}` counter count per thread, the stop.lua and
-/// counter.lua behavior.
+/// limits, the `{{n}}` counter, and a capture rule count per thread,
+/// the stop.lua, counter.lua, and auth.lua behavior.
 pub struct ConfigEngine {
     /// The formatted request bytes of a literal file, rebuilt never,
     /// the file is data.
     request: Vec<u8>,
-    /// The render pieces of a templated file, one render per burst.
-    template: Option<TemplatedRequest>,
+    /// The render pieces of a dynamic file, one render per burst.
+    dynamic: Option<DynamicRequest>,
     /// The `-H` values under the file headers, the overlay base.
     base_headers: Vec<(String, String)>,
     /// The parsed benchmark file.
@@ -47,11 +47,11 @@ pub struct ConfigEngine {
     globals: HashMap<String, Value>,
 }
 
-/// The render pieces of a templated request.
+/// The render pieces of a dynamic request.
 ///
 /// One render builds one request: every tag in it draws from one
 /// counter value, so the path, body, and headers of a request agree.
-struct TemplatedRequest {
+struct DynamicRequest {
     /// The HTTP method, methods are not template fields.
     method: String,
     /// The path template.
@@ -66,19 +66,69 @@ struct TemplatedRequest {
     counter: u64,
     /// The random source behind `{{rand}}`.
     rng: Rng,
+    /// The capture rule state, absent means no capture.
+    capture: Option<DynamicCapture>,
 }
 
-impl TemplatedRequest {
+/// The runtime state of one capture rule.
+///
+/// The rule lives in the dynamic request because it is the third
+/// dynamic shape: the request changes when the capture lands.
+struct DynamicCapture {
+    /// The response header to copy, matched case insensitively.
+    header: String,
+    /// The request header that carries the captured value.
+    to: String,
+    /// The path of the requests after the capture, absent keeps the
+    /// request path.
+    path: Option<Template>,
+    /// The captured value, absent until the first response carries
+    /// the header.
+    value: Option<String>,
+}
+
+impl DynamicCapture {
+    /// Offers one response to the rule.
+    ///
+    /// The first response carrying the header wins and later
+    /// responses never refresh the value, the `if not token` guard
+    /// of auth.lua.
+    fn offer(&mut self, headers: &[(String, String)]) {
+        if self.value.is_some() {
+            return;
+        }
+        self.value = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(&self.header))
+            .map(|(_, value)| value.clone());
+    }
+}
+
+impl DynamicRequest {
     /// Renders the next request over the `-H` header base.
     fn render(&mut self, base: &[(String, String)]) -> Vec<u8> {
         let counter = self.counter;
         self.counter += 1;
-        let path = self.path.render(counter, &mut self.rng);
-        let headers: Vec<(String, String)> = self
+        let captured = self
+            .capture
+            .as_ref()
+            .and_then(|capture| capture.value.clone());
+        let path = match (&self.capture, &captured) {
+            (Some(capture), Some(_)) => capture
+                .path
+                .as_ref()
+                .unwrap_or(&self.path)
+                .render(counter, &mut self.rng),
+            _ => self.path.render(counter, &mut self.rng),
+        };
+        let mut headers: Vec<(String, String)> = self
             .headers
             .iter()
             .map(|(name, value)| (name.clone(), value.render(counter, &mut self.rng)))
             .collect();
+        if let (Some(capture), Some(value)) = (&self.capture, captured) {
+            headers.push((capture.to.clone(), value));
+        }
         let body = self
             .body
             .as_ref()
@@ -115,8 +165,21 @@ impl ScriptEngine for ConfigEngine {
             spec.parts.host.as_deref().unwrap_or_default(),
             spec.parts.port.as_deref(),
         );
-        let (request, template) = if file.is_templated() {
-            let template = TemplatedRequest {
+        let (request, dynamic) = if file.is_dynamic() {
+            let capture = match &file.capture {
+                Some(rule) => Some(DynamicCapture {
+                    header: rule.header.clone(),
+                    to: rule.to.clone().unwrap_or_else(|| rule.header.clone()),
+                    path: rule
+                        .path
+                        .as_deref()
+                        .map(|path| template_of("capture.path", path))
+                        .transpose()?,
+                    value: None,
+                }),
+                None => None,
+            };
+            let dynamic = DynamicRequest {
                 method: file
                     .request
                     .method
@@ -143,8 +206,9 @@ impl ScriptEngine for ConfigEngine {
                 host,
                 counter: 1,
                 rng: Rng::new(),
+                capture,
             };
-            (Vec::new(), Some(template))
+            (Vec::new(), Some(dynamic))
         } else {
             let request = format_request(
                 file.request.method.as_deref().unwrap_or("GET"),
@@ -157,7 +221,7 @@ impl ScriptEngine for ConfigEngine {
         };
         Ok(ConfigEngine {
             request,
-            template,
+            dynamic,
             base_headers: spec.headers.clone(),
             file,
             completed: 0,
@@ -196,8 +260,8 @@ impl ScriptEngine for ConfigEngine {
     }
 
     fn request(&mut self) -> Result<Vec<u8>, EngineError> {
-        match &mut self.template {
-            Some(template) => Ok(template.render(&self.base_headers)),
+        match &mut self.dynamic {
+            Some(dynamic) => Ok(dynamic.render(&self.base_headers)),
             None => Ok(self.request.clone()),
         }
     }
@@ -205,11 +269,16 @@ impl ScriptEngine for ConfigEngine {
     fn response(
         &mut self,
         _status: u16,
-        _headers: &[(String, String)],
+        headers: &[(String, String)],
         body: &[u8],
     ) -> Result<(), EngineError> {
         self.completed += 1;
         self.received += body.len() as u64;
+        if let Some(dynamic) = &mut self.dynamic
+            && let Some(capture) = &mut dynamic.capture
+        {
+            capture.offer(headers);
+        }
         if let Some(thread) = &self.thread
             && self.file.stop.reached(self.completed, self.received)
         {
@@ -229,8 +298,8 @@ impl ScriptEngine for ConfigEngine {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            is_static: self.template.is_none(),
-            wants_response: self.file.stop.is_set(),
+            is_static: self.dynamic.is_none(),
+            wants_response: self.file.stop.is_set() || self.file.capture.is_some(),
             ..Capabilities::default()
         }
     }
@@ -594,6 +663,187 @@ mod tests {
         assert!(first.request().unwrap().starts_with(b"GET /2 "));
     }
 
+    #[test]
+    fn a_capture_rule_runs_the_auth_flow() {
+        let script = temp_file(
+            "wrkrs-config-capture.toml",
+            "[request]\npath = \"/authenticate\"\n[capture]\nheader = \"X-Token\"\n\
+             path = \"/resource\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        let capabilities = engine.capabilities();
+        assert!(!capabilities.is_static);
+        assert!(capabilities.wants_response);
+        assert_eq!(
+            engine.request().unwrap(),
+            b"GET /authenticate HTTP/1.1\r\nHost: example.test:8080\r\n\r\n"
+        );
+        engine
+            .response(200, &[("X-Token".to_owned(), "abc123".to_owned())], b"ok")
+            .unwrap();
+        assert_eq!(
+            engine.request().unwrap(),
+            b"GET /resource HTTP/1.1\r\n\
+              X-Token: abc123\r\n\
+              Host: example.test:8080\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn responses_without_the_header_keep_the_auth_phase() {
+        let script = temp_file(
+            "wrkrs-config-capture-wait.toml",
+            "[request]\npath = \"/authenticate\"\n[capture]\nheader = \"X-Token\"\n\
+             path = \"/resource\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        engine.response(503, &[], b"down").unwrap();
+        assert!(engine.request().unwrap().starts_with(b"GET /authenticate "));
+        engine
+            .response(
+                200,
+                &[("Content-Type".to_owned(), "text/plain".to_owned())],
+                b"",
+            )
+            .unwrap();
+        assert!(engine.request().unwrap().starts_with(b"GET /authenticate "));
+    }
+
+    #[test]
+    fn the_header_matches_case_insensitively() {
+        let script = temp_file(
+            "wrkrs-config-capture-case.toml",
+            "[capture]\nheader = \"X-Token\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        engine
+            .response(200, &[("x-token".to_owned(), "v".to_owned())], b"")
+            .unwrap();
+        assert!(contains(&engine.request().unwrap(), b"\r\nX-Token: v\r\n"));
+    }
+
+    #[test]
+    fn the_capture_lands_once_and_never_refreshes() {
+        let script = temp_file(
+            "wrkrs-config-capture-once.toml",
+            "[capture]\nheader = \"X-Token\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        engine
+            .response(200, &[("X-Token".to_owned(), "first".to_owned())], b"")
+            .unwrap();
+        engine
+            .response(200, &[("X-Token".to_owned(), "second".to_owned())], b"")
+            .unwrap();
+        assert!(contains(
+            &engine.request().unwrap(),
+            b"\r\nX-Token: first\r\n"
+        ));
+    }
+
+    #[test]
+    fn a_capture_target_renames_the_header() {
+        let script = temp_file(
+            "wrkrs-config-capture-rename.toml",
+            "[capture]\nheader = \"X-Token\"\nto = \"Authorization\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        engine
+            .response(200, &[("X-Token".to_owned(), "abc".to_owned())], b"")
+            .unwrap();
+        assert!(contains(
+            &engine.request().unwrap(),
+            b"\r\nAuthorization: abc\r\n"
+        ));
+    }
+
+    #[test]
+    fn without_a_capture_path_the_requests_stay_on_theirs() {
+        let script = temp_file(
+            "wrkrs-config-capture-same-path.toml",
+            "[request]\npath = \"/api\"\n[capture]\nheader = \"Set-Cookie\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        engine
+            .response(200, &[("Set-Cookie".to_owned(), "id=1".to_owned())], b"")
+            .unwrap();
+        assert_eq!(
+            engine.request().unwrap(),
+            b"GET /api HTTP/1.1\r\nSet-Cookie: id=1\r\nHost: example.test:8080\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn the_captured_header_layers_over_dash_h_and_file_values() {
+        let script = temp_file(
+            "wrkrs-config-capture-overlay.toml",
+            "[request]\npath = \"/authenticate\"\n\
+             [request.headers]\nX-Token = \"stale\"\n\
+             [capture]\nheader = \"X-Token\"\npath = \"/resource\"\n",
+        );
+        let headers = vec![
+            ("X-Token".to_owned(), "dash-h".to_owned()),
+            ("User-Agent".to_owned(), "wrkrs".to_owned()),
+        ];
+        let mut engine = ConfigEngine::create(&spec_with(Some(&script), headers)).unwrap();
+        assert!(contains(
+            &engine.request().unwrap(),
+            b"\r\nX-Token: stale\r\n"
+        ));
+        engine
+            .response(200, &[("X-Token".to_owned(), "fresh".to_owned())], b"")
+            .unwrap();
+        assert_eq!(
+            engine.request().unwrap(),
+            b"GET /resource HTTP/1.1\r\n\
+              X-Token: fresh\r\n\
+              User-Agent: wrkrs\r\n\
+              Host: example.test:8080\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn templated_files_capture_the_rendered_flow() {
+        let script = temp_file(
+            "wrkrs-config-capture-template.toml",
+            "[request]\npath = \"/authenticate\"\n[capture]\nheader = \"X-Token\"\n\
+             path = \"/items/{{n}}\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        engine.request().unwrap();
+        engine
+            .response(200, &[("X-Token".to_owned(), "abc".to_owned())], b"")
+            .unwrap();
+        // The captured phase renders its own template, starting from
+        // the counter it left off at.
+        assert_eq!(
+            engine.request().unwrap(),
+            b"GET /items/2 HTTP/1.1\r\nX-Token: abc\r\nHost: example.test:8080\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn capture_rules_keep_stop_conditions() {
+        let script = temp_file(
+            "wrkrs-config-capture-stop.toml",
+            "[request]\npath = \"/authenticate\"\n[capture]\nheader = \"X-Token\"\n\
+             path = \"/resource\"\n[stop]\nrequests = 2\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        let capabilities = engine.capabilities();
+        assert!(!capabilities.is_static);
+        assert!(capabilities.wants_response);
+        let (thread, handle) = stopped_thread();
+        engine.init(handle, &[]).unwrap();
+        engine
+            .response(200, &[("X-Token".to_owned(), "abc".to_owned())], b"ok")
+            .unwrap();
+        assert!(!thread.stopped.load(std::sync::atomic::Ordering::Relaxed));
+        engine.response(200, &[], b"ok").unwrap();
+        assert!(thread.stopped.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(engine.request().unwrap().starts_with(b"GET /resource "));
+    }
+
     struct FakeThread {
         stopped: std::sync::atomic::AtomicBool,
     }
@@ -629,6 +879,11 @@ mod tests {
 
     fn spec(script: &std::path::Path) -> ScriptSpec {
         spec_with(Some(script), vec![])
+    }
+
+    /// Whether the request bytes carry the byte slice.
+    fn contains(bytes: &[u8], needle: &[u8]) -> bool {
+        bytes.windows(needle.len()).any(|window| window == needle)
     }
 
     #[test]
