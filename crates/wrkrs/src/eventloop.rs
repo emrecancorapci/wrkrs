@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn a_dead_target_storms_and_counts_connect_errors() {
         let factory = crate::engines::default_engine().expect("an engine").factory;
-        let spec = build_spec(&test_config("http://127.0.0.1:1/"));
+        let spec = build_spec(&test_config("http://127.0.0.1:1/", None));
         let mut engine = factory(&spec).expect("engine builds");
         engine.init(Arc::new(HostThread::new()), &[]).expect("init");
 
@@ -617,14 +617,14 @@ mod tests {
         assert_eq!(counters.complete, 0);
     }
 
-    fn test_config(url: &str) -> crate::cli::Config {
+    fn test_config(url: &str, script: Option<&std::path::Path>) -> crate::cli::Config {
         crate::cli::Config {
             threads: 1,
             connections: 1,
             duration_s: 1,
             timeout_ms: 2000,
             latency: false,
-            script: None,
+            script: script.map(std::path::PathBuf::from),
             headers: vec![],
             engine: None,
             output: Default::default(),
@@ -633,6 +633,36 @@ mod tests {
             parts: crate::parser::parse_url(url).expect("valid url"),
             init_args: vec![url.to_owned()],
         }
+    }
+
+    /// Writes a stop script, the stop.lua shape, so the loop exits
+    /// after this many responses instead of a wall clock window that
+    /// races the server threads for scheduling.
+    fn stop_script(name: &str, limit: u64) -> std::path::PathBuf {
+        let source = format!(
+            "local counter = 0\n\
+             function response()\n   \
+             counter = counter + 1\n   \
+             if counter == {limit} then\n      \
+             wrk.thread:stop()\n   \
+             end\n\
+             end\n"
+        );
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, source).expect("write the stop script");
+        path
+    }
+
+    /// The watchdog behind the live loop tests, a healthy run stops
+    /// itself on the script's limit long before this fires.
+    fn watchdog() -> Arc<StopFlag> {
+        let stop = Arc::new(StopFlag::new());
+        let early = Arc::clone(&stop);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(10));
+            early.stop();
+        });
+        stop
     }
 
     #[test]
@@ -646,35 +676,28 @@ mod tests {
         });
 
         let url = format!("http://127.0.0.1:{}/", address.port());
+        let script = stop_script("wrkrs-eventloop-stop-plain.lua", 100);
         let factory = crate::engines::default_engine().expect("an engine").factory;
-        let spec = build_spec(&test_config(&url));
+        let spec = build_spec(&test_config(&url, Some(&script)));
+        let handle = Arc::new(HostThread::new());
         let mut engine = factory(&spec).expect("engine builds");
-        engine
-            .init(Arc::new(HostThread::new()), &[url])
-            .expect("init");
-
-        let stop = Arc::new(StopFlag::new());
-        let early = Arc::clone(&stop);
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(500));
-            early.stop();
-        });
+        engine.init(handle.clone(), &[url]).expect("init");
 
         let counters = run(
             address,
             1,
             engine,
-            Arc::new(HostThread::new()),
+            handle,
             Arc::new(Histogram::new(2_000_000)),
             Arc::new(Histogram::new(10_000_000)),
-            stop,
+            watchdog(),
             1,
             false,
             false,
-            false,
+            true,
             None,
         );
-        assert!(counters.complete > 0, "completed requests: {:?}", counters);
+        assert_eq!(counters.complete, 100, "completed requests: {counters:?}");
         assert!(counters.bytes > 0);
         assert_eq!(counters.errors.read, 0);
         assert_eq!(counters.errors.write, 0);
@@ -725,35 +748,28 @@ mod tests {
         });
 
         let url = format!("https://127.0.0.1:{}/", address.port());
+        let script = stop_script("wrkrs-eventloop-stop-tls.lua", 100);
         let factory = crate::engines::default_engine().expect("an engine").factory;
-        let spec = build_spec(&test_config(&url));
+        let spec = build_spec(&test_config(&url, Some(&script)));
+        let handle = Arc::new(HostThread::new());
         let mut engine = factory(&spec).expect("engine builds");
-        engine
-            .init(Arc::new(HostThread::new()), &[url])
-            .expect("init");
-
-        let stop = Arc::new(StopFlag::new());
-        let early = Arc::clone(&stop);
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(500));
-            early.stop();
-        });
+        engine.init(handle.clone(), &[url]).expect("init");
 
         let counters = run(
             address,
             1,
             engine,
-            Arc::new(HostThread::new()),
+            handle,
             Arc::new(Histogram::new(2_000_000)),
             Arc::new(Histogram::new(10_000_000)),
-            stop,
+            watchdog(),
             1,
             false,
             false,
-            false,
+            true,
             Some(Arc::new(crate::tls::TlsSetup::new("127.0.0.1"))),
         );
-        assert!(counters.complete > 0, "completed requests: {counters:?}");
+        assert_eq!(counters.complete, 100, "completed requests: {counters:?}");
         assert!(counters.bytes > 0);
         assert_eq!(counters.errors.read, 0);
         assert_eq!(counters.errors.write, 0);
