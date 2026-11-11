@@ -48,9 +48,11 @@ custom done reporting stay in scripts.
   (static scripts never call back at runtime, so full rate holds),
   and the build needs a Python to link, vendored or system, the
   LuaJIT style static story is heavier here.
+  Status: deferred, see the V6 note in PLAN.md.
 
 ## Research
 
 - **HTTP/2**: httparse is 1.1 only, an h2 engine means a second
   framing layer beside the response framer. Decide after measuring
   demand, the C tool never had it.
+  Status: planned as V14, see PLAN-http2.md.

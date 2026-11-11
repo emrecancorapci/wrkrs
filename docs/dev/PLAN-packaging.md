@@ -137,6 +137,11 @@ small commits, every commit green standalone.
 
 ### P2 — the full API
 
+> Note (2.0 planning): P2 also carries the typed test API from
+> the V8 phase in PLAN.md, corrected and uncorrected latency,
+> diagnostics, and compare/threshold results in assertion-friendly
+> types. It depends on phases V9-V12 landing first.
+
 - [ ] `headers`, `request`, `stop` through the temp config file;
       `script`, `timeout`, `extraArgs` passthrough
 - [ ] `signal` abort to SIGINT, `timeoutMs` hard kill, the error
