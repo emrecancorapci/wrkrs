@@ -118,7 +118,28 @@ requests = 1000
 ```
 
 The JSON shape carries the same fields as nested objects.
-`scripts/bench.toml` and `scripts/stop.toml` are runnable examples.
+`scripts/bench.toml`, `scripts/stop.toml`, and `scripts/counter.toml`
+are runnable examples.
+
+Templating:
+
+- `path`, `body`, and header values may carry `{{n}}` and `{{rand}}`
+  tags. `{{n}}` renders a per thread counter starting at one,
+  `{{rand}}` a random integer, and every tag in one request draws
+  from the same counter value, so the path, body, and headers of a
+  request agree
+- substitution happens per burst, so a templated file reports
+  dynamic capabilities and pays the per request rendering cost
+  instead of the build once cost of a literal file
+- the thread zero pipeline probe consumes the first counter value,
+  so a single thread run puts 2, 3, 4 on the wire first,
+  counter.lua counting from zero leaves 1, 2, 3 the same way
+- `Content-Length` follows the rendered body, a counter growing
+  from 9 to 10 grows the length
+- tags are strict, a data file is not a language: `{{` must open
+  exactly `{{n}}` or `{{rand}}`, anything else fails the run with
+  the field named. Methods, header names, and the URL path are not
+  template fields, `-H` values stay literal
 
 Rules:
 

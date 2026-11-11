@@ -33,11 +33,11 @@ machinery the engine already needed, so V2 narrows to templating.
 
 ## Phase V2 — templating
 
-- [ ] light templating in `path`, `body`, and header values:
+- [x] light templating in `path`, `body`, and header values:
       `{{n}}` is a per thread counter starting at one, `{{rand}}` is
       a random integer, substitution happens per burst so a
       templated file reports dynamic capabilities
-- [ ] acceptance: a templated config file behaves like `counter.lua`
+- [x] acceptance: a templated config file behaves like `counter.lua`
       on the wire
 
 ## Phase V3 — capture rules
