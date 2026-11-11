@@ -1,11 +1,14 @@
 //! The config engine, benchmark files instead of scripts.
 //!
 //! A TOML or JSON file shapes the load the way a static script would,
-//! with request fields and stop conditions as data. Files parse
-//! through one schema, see [`file`], and dispatch through the engine
-//! registry on the `.toml` and `.json` extensions.
+//! with request fields and stop conditions as data, and light
+//! templating for the dynamic shapes. Files parse through one schema,
+//! see [`file`], template tags parse through [`template`], and both
+//! dispatch through the engine registry on the `.toml` and `.json`
+//! extensions.
 
 mod file;
+mod template;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -17,14 +20,21 @@ use wrkrs_engine::{
 };
 
 use self::file::{BenchFile, parse};
+use self::template::{Rng, Template};
 
 /// Engine driven by one benchmark file.
 ///
 /// Every thread builds its own instance from the same spec, so stop
-/// limits count per thread, the stop.lua behavior.
+/// limits and the `{{n}}` counter count per thread, the stop.lua and
+/// counter.lua behavior.
 pub struct ConfigEngine {
-    /// The formatted request bytes, rebuilt never, the file is data.
+    /// The formatted request bytes of a literal file, rebuilt never,
+    /// the file is data.
     request: Vec<u8>,
+    /// The render pieces of a templated file, one render per burst.
+    template: Option<TemplatedRequest>,
+    /// The `-H` values under the file headers, the overlay base.
+    base_headers: Vec<(String, String)>,
     /// The parsed benchmark file.
     file: BenchFile,
     /// Completed requests this thread saw.
@@ -37,10 +47,62 @@ pub struct ConfigEngine {
     globals: HashMap<String, Value>,
 }
 
+/// The render pieces of a templated request.
+///
+/// One render builds one request: every tag in it draws from one
+/// counter value, so the path, body, and headers of a request agree.
+struct TemplatedRequest {
+    /// The HTTP method, methods are not template fields.
+    method: String,
+    /// The path template.
+    path: Template,
+    /// File header templates, rendered then layered over `-H`.
+    headers: Vec<(String, Template)>,
+    /// The body template, absent means none.
+    body: Option<Template>,
+    /// The default Host value, replaced by a file Host entry.
+    host: String,
+    /// The value rendered into the next `{{n}}`, starting at one.
+    counter: u64,
+    /// The random source behind `{{rand}}`.
+    rng: Rng,
+}
+
+impl TemplatedRequest {
+    /// Renders the next request over the `-H` header base.
+    fn render(&mut self, base: &[(String, String)]) -> Vec<u8> {
+        let counter = self.counter;
+        self.counter += 1;
+        let path = self.path.render(counter, &mut self.rng);
+        let headers: Vec<(String, String)> = self
+            .headers
+            .iter()
+            .map(|(name, value)| (name.clone(), value.render(counter, &mut self.rng)))
+            .collect();
+        let body = self
+            .body
+            .as_ref()
+            .map(|body| body.render(counter, &mut self.rng).into_bytes());
+        format_request(
+            &self.method,
+            &path,
+            &overlay(base, &headers),
+            body.as_deref(),
+            Some(&self.host),
+        )
+    }
+}
+
 /// Registry factory that builds a [`ConfigEngine`].
 pub fn factory(spec: &ScriptSpec) -> Result<Box<dyn ScriptEngine>, EngineError> {
     let engine = ConfigEngine::create(spec)?;
     Ok(Box::new(engine))
+}
+
+/// Parses one file field into a template, errors keep the field.
+fn template_of(field: &str, source: &str) -> Result<Template, EngineError> {
+    Template::new(source)
+        .map_err(|error| EngineError::Load(format!("invalid template in {field}: {error}")))
 }
 
 impl ScriptEngine for ConfigEngine {
@@ -53,15 +115,50 @@ impl ScriptEngine for ConfigEngine {
             spec.parts.host.as_deref().unwrap_or_default(),
             spec.parts.port.as_deref(),
         );
-        let request = format_request(
-            file.request.method.as_deref().unwrap_or("GET"),
-            file.request.path.as_deref().unwrap_or(&spec.parts.path),
-            &overlay(&spec.headers, &file.request.headers),
-            file.request.body.as_deref().map(str::as_bytes),
-            Some(&host),
-        );
+        let (request, template) = if file.is_templated() {
+            let template = TemplatedRequest {
+                method: file
+                    .request
+                    .method
+                    .clone()
+                    .unwrap_or_else(|| "GET".to_owned()),
+                path: match &file.request.path {
+                    Some(path) => template_of("request.path", path)?,
+                    // The URL path is not a file field, it stays
+                    // literal even beside templated fields.
+                    None => Template::literal(&spec.parts.path),
+                },
+                headers: file
+                    .request
+                    .headers
+                    .iter()
+                    .map(|(name, value)| Ok((name.clone(), template_of("request.headers", value)?)))
+                    .collect::<Result<Vec<_>, EngineError>>()?,
+                body: file
+                    .request
+                    .body
+                    .as_ref()
+                    .map(|body| template_of("request.body", body))
+                    .transpose()?,
+                host,
+                counter: 1,
+                rng: Rng::new(),
+            };
+            (Vec::new(), Some(template))
+        } else {
+            let request = format_request(
+                file.request.method.as_deref().unwrap_or("GET"),
+                file.request.path.as_deref().unwrap_or(&spec.parts.path),
+                &overlay(&spec.headers, &file.request.headers),
+                file.request.body.as_deref().map(str::as_bytes),
+                Some(&host),
+            );
+            (request, None)
+        };
         Ok(ConfigEngine {
             request,
+            template,
+            base_headers: spec.headers.clone(),
             file,
             completed: 0,
             received: 0,
@@ -99,7 +196,10 @@ impl ScriptEngine for ConfigEngine {
     }
 
     fn request(&mut self) -> Result<Vec<u8>, EngineError> {
-        Ok(self.request.clone())
+        match &mut self.template {
+            Some(template) => Ok(template.render(&self.base_headers)),
+            None => Ok(self.request.clone()),
+        }
     }
 
     fn response(
@@ -129,7 +229,7 @@ impl ScriptEngine for ConfigEngine {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            is_static: true,
+            is_static: self.template.is_none(),
             wants_response: self.file.stop.is_set(),
             ..Capabilities::default()
         }
@@ -332,6 +432,166 @@ mod tests {
             engine.request().unwrap(),
             b"POST / HTTP/1.1\r\nHost: example.test:8080\r\nContent-Length: 0\r\n\r\n"
         );
+    }
+
+    #[test]
+    fn a_templated_file_renders_per_request_and_reports_dynamic() {
+        let script = temp_file(
+            "wrkrs-config-template.toml",
+            "[request]\npath = \"/items/{{n}}\"\nbody = \"n={{n}}\"\n\
+             [request.headers]\nX-Counter = \"{{n}}\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        let capabilities = engine.capabilities();
+        assert!(!capabilities.is_static);
+        assert!(!capabilities.wants_response);
+        assert_eq!(
+            engine.request().unwrap(),
+            b"GET /items/1 HTTP/1.1\r\n\
+              X-Counter: 1\r\n\
+              Host: example.test:8080\r\n\
+              Content-Length: 3\r\n\
+              \r\n\
+              n=1"
+        );
+        assert_eq!(
+            engine.request().unwrap(),
+            b"GET /items/2 HTTP/1.1\r\n\
+              X-Counter: 2\r\n\
+              Host: example.test:8080\r\n\
+              Content-Length: 3\r\n\
+              \r\n\
+              n=2"
+        );
+    }
+
+    #[test]
+    fn the_content_length_follows_the_rendered_body() {
+        let script = temp_file(
+            "wrkrs-config-template-body.toml",
+            "[request]\nbody = \"{{n}}\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        for _ in 1..10 {
+            engine.request().unwrap();
+        }
+        // The tenth render grows the body from one digit to two.
+        assert_eq!(
+            engine.request().unwrap(),
+            b"GET / HTTP/1.1\r\nHost: example.test:8080\r\nContent-Length: 2\r\n\r\n10"
+        );
+    }
+
+    #[test]
+    fn random_tags_render_digits_that_change_per_request() {
+        let script = temp_file(
+            "wrkrs-config-template-rand.toml",
+            "[request]\npath = \"/session/{{rand}}\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        assert!(!engine.capabilities().is_static);
+        let first = engine.request().unwrap();
+        let second = engine.request().unwrap();
+        let target = |request: &[u8]| {
+            let line_end = request
+                .iter()
+                .position(|byte| *byte == b'\r')
+                .expect("request line ends");
+            request[..line_end]
+                .split(|byte| *byte == b' ')
+                .nth(1)
+                .expect("the request line target")
+                .to_owned()
+        };
+        for path in [target(&first), target(&second)] {
+            assert!(path.starts_with(b"/session/"));
+            assert!(
+                path[b"/session/".len()..]
+                    .iter()
+                    .all(|byte| byte.is_ascii_digit())
+            );
+        }
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn dash_h_values_stay_literal_under_a_templated_file() {
+        let script = temp_file(
+            "wrkrs-config-template-overlay.toml",
+            "[request]\npath = \"/{{n}}\"\n[request.headers]\nX-Counter = \"{{n}}\"\n",
+        );
+        let headers = vec![
+            ("X-Counter".to_owned(), "static".to_owned()),
+            ("User-Agent".to_owned(), "wrkrs".to_owned()),
+        ];
+        let mut engine = ConfigEngine::create(&spec_with(Some(&script), headers)).unwrap();
+        assert_eq!(
+            engine.request().unwrap(),
+            b"GET /1 HTTP/1.1\r\n\
+              X-Counter: 1\r\n\
+              User-Agent: wrkrs\r\n\
+              Host: example.test:8080\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn the_url_path_stays_literal_beside_templated_fields() {
+        let script = temp_file(
+            "wrkrs-config-template-url-path.toml",
+            "[request]\nbody = \"{{n}}\"\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        let request = engine.request().unwrap();
+        assert!(request.starts_with(b"GET / HTTP/1.1\r\n"));
+        assert!(request.ends_with(b"\r\n\r\n1"));
+    }
+
+    #[test]
+    fn templated_files_json_shaped_render_the_same_way() {
+        let script = temp_file(
+            "wrkrs-config-template.json",
+            "{\"request\":{\"path\":\"/{{n}}\",\"headers\":{\"X-Counter\":\"{{n}}\"}}}",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        assert!(!engine.capabilities().is_static);
+        assert_eq!(
+            engine.request().unwrap(),
+            b"GET /1 HTTP/1.1\r\nX-Counter: 1\r\nHost: example.test:8080\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn templated_files_keep_stop_conditions() {
+        let script = temp_file(
+            "wrkrs-config-template-stop.toml",
+            "[request]\npath = \"/{{n}}\"\n[stop]\nrequests = 2\n",
+        );
+        let mut engine = ConfigEngine::create(&spec(&script)).unwrap();
+        let capabilities = engine.capabilities();
+        assert!(!capabilities.is_static);
+        assert!(capabilities.wants_response);
+        let (thread, handle) = stopped_thread();
+        engine.init(handle, &[]).unwrap();
+        engine.request().unwrap();
+        engine.response(200, &[], b"ok").unwrap();
+        assert!(!thread.stopped.load(std::sync::atomic::Ordering::Relaxed));
+        engine.response(200, &[], b"ok").unwrap();
+        assert!(thread.stopped.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn each_engine_instance_counts_its_own_counter() {
+        let script = temp_file(
+            "wrkrs-config-template-threads.toml",
+            "[request]\npath = \"/{{n}}\"\n",
+        );
+        // One engine per thread, the runner builds them from one
+        // spec, so the counters start apart.
+        let mut first = ConfigEngine::create(&spec(&script)).unwrap();
+        let mut second = ConfigEngine::create(&spec(&script)).unwrap();
+        assert!(first.request().unwrap().starts_with(b"GET /1 "));
+        assert!(second.request().unwrap().starts_with(b"GET /1 "));
+        assert!(first.request().unwrap().starts_with(b"GET /2 "));
     }
 
     struct FakeThread {

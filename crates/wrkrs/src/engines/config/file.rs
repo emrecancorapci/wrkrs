@@ -5,6 +5,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use super::template::Template;
+
 /// One parsed benchmark file.
 ///
 /// The TOML shape:
@@ -109,6 +111,20 @@ pub fn parse(path: &Path) -> Result<BenchFile, FileError> {
 }
 
 impl BenchFile {
+    /// Whether any request field carries a template tag.
+    ///
+    /// A templated file renders per burst instead of once, the
+    /// dynamic half of the config engine.
+    pub fn is_templated(&self) -> bool {
+        self.request.path.as_deref().is_some_and(Template::detect)
+            || self.request.body.as_deref().is_some_and(Template::detect)
+            || self
+                .request
+                .headers
+                .iter()
+                .any(|(_, value)| Template::detect(value))
+    }
+
     /// Rejects values that would corrupt the wire format.
     ///
     /// A script can produce whatever bytes it wants, a data file
@@ -120,6 +136,13 @@ impl BenchFile {
             && (method.is_empty() || method.bytes().any(|byte| byte <= b' ' || byte == 0x7f))
         {
             return Err(format!("invalid method '{method}'"));
+        }
+        if let Some(method) = &request.method
+            && Template::detect(method)
+        {
+            return Err(format!(
+                "invalid method '{method}', the method is not a template field"
+            ));
         }
         if let Some(path) = &request.path {
             if path != "*" && !path.starts_with('/') {
@@ -139,12 +162,32 @@ impl BenchFile {
             {
                 return Err(format!("invalid header name '{name}'"));
             }
+            if Template::detect(name) {
+                return Err(format!(
+                    "invalid header name '{name}', header names are not template fields"
+                ));
+            }
             if value.bytes().any(|byte| byte < b' ' || byte == 0x7f)
                 || value.starts_with(' ')
                 || value.ends_with(' ')
             {
                 return Err(format!("invalid header value for '{name}'"));
             }
+        }
+        // Tags must name a known value, a typo would otherwise ride
+        // the wire as literal text.
+        for (field, value) in [
+            ("request.path", request.path.as_deref()),
+            ("request.body", request.body.as_deref()),
+        ] {
+            if let Some(value) = value {
+                Template::new(value)
+                    .map_err(|error| format!("invalid template in {field}: {error}"))?;
+            }
+        }
+        for (name, value) in &request.headers {
+            Template::new(value)
+                .map_err(|error| format!("invalid template in request.headers.{name}: {error}"))?;
         }
         for (field, limit) in [("requests", self.stop.requests), ("bytes", self.stop.bytes)] {
             if limit.is_some_and(|limit| limit == 0) {
@@ -376,6 +419,80 @@ mod tests {
     }
 
     #[test]
+    fn templated_fields_flag_the_file() {
+        let file = from_toml(
+            "[request]\npath = \"/items/{{n}}\"\nbody = \"n={{n}}&r={{rand}}\"\n\
+             [request.headers]\nX-Counter = \"{{n}}\"\n",
+        );
+        assert!(file.is_templated());
+        assert!(file.validate().is_ok());
+    }
+
+    #[test]
+    fn plain_files_stay_literal() {
+        let file = from_toml(
+            "[request]\npath = \"/items/1\"\nbody = \"n=1\"\n\
+             [request.headers]\nX-Counter = \"one\"\n",
+        );
+        assert!(!file.is_templated());
+    }
+
+    #[test]
+    fn json_files_carry_templates_too() {
+        let file: BenchFile =
+            serde_json::from_str("{\"request\":{\"path\":\"/{{n}}\"}}").expect("json parses");
+        assert!(file.is_templated());
+        assert!(file.validate().is_ok());
+    }
+
+    #[test]
+    fn unknown_tags_fail_validation_with_the_field() {
+        let mut file = BenchFile::default();
+        file.request.path = Some("/x/{{count}}".to_owned());
+        assert_eq!(
+            file.validate().unwrap_err(),
+            "invalid template in request.path: \
+             unknown template tag '{{count}}', known tags are {{n}} and {{rand}}"
+        );
+        file.request.path = Some("/x/{{n".to_owned());
+        assert_eq!(
+            file.validate().unwrap_err(),
+            "invalid template in request.path: \
+             unterminated template tag '{{n', known tags are {{n}} and {{rand}}"
+        );
+        file.request.path = None;
+        file.request.body = Some("{{ n }}".to_owned());
+        assert_eq!(
+            file.validate().unwrap_err(),
+            "invalid template in request.body: \
+             unknown template tag '{{ n }}', known tags are {{n}} and {{rand}}"
+        );
+        file.request.body = None;
+        file.request.headers = vec![("X-Api".to_owned(), "{{rand}".to_owned())];
+        assert!(
+            file.validate()
+                .unwrap_err()
+                .contains("invalid template in request.headers.X-Api: unterminated")
+        );
+    }
+
+    #[test]
+    fn methods_and_header_names_never_carry_tags() {
+        let mut file = BenchFile::default();
+        file.request.method = Some("{{n}}".to_owned());
+        assert_eq!(
+            file.validate().unwrap_err(),
+            "invalid method '{{n}}', the method is not a template field"
+        );
+        file.request.method = None;
+        file.request.headers = vec![("{{n}}".to_owned(), "1".to_owned())];
+        assert_eq!(
+            file.validate().unwrap_err(),
+            "invalid header name '{{n}}', header names are not template fields"
+        );
+    }
+
+    #[test]
     fn parse_dispatches_by_extension() {
         let toml_file = std::env::temp_dir().join("wrkrs-config-parse.toml");
         std::fs::write(&toml_file, "[stop]\nrequests = 5\n").expect("write temp file");
@@ -403,6 +520,12 @@ mod tests {
         std::fs::write(&invalid, "[request]\npath = \"no-slash\"\n").expect("write temp file");
         let error = parse(&invalid).unwrap_err();
         assert!(error.to_string().contains("must start with a slash"));
+
+        let mistyped = std::env::temp_dir().join("wrkrs-config-mistyped.toml");
+        std::fs::write(&mistyped, "[request]\npath = \"/x/{{count}}\"\n").expect("write temp file");
+        let error = parse(&mistyped).unwrap_err();
+        assert!(matches!(error, FileError::Parse(_, _)));
+        assert!(error.to_string().contains("unknown template tag"));
     }
 
     #[test]
