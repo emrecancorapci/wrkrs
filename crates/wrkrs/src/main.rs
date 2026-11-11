@@ -49,6 +49,7 @@ fn run(config: Box<cli::Config>) {
                 }),
                 wrkrs::cli::OutputMode::Modern => Box::new(wrkrs::modern::ModernReporter),
                 wrkrs::cli::OutputMode::Json => Box::new(wrkrs::json::JsonReporter),
+                wrkrs::cli::OutputMode::Html => Box::new(wrkrs::html::HtmlReporter),
             };
             // The banner is legacy output: live on stdout before the
             // run, into the file when the report lands there.

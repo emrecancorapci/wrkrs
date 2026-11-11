@@ -6,6 +6,7 @@ pub mod connection;
 pub mod engines;
 pub mod eventloop;
 pub mod getopt;
+pub mod html;
 pub mod json;
 pub mod legacy;
 pub mod modern;

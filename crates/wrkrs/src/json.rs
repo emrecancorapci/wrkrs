@@ -13,30 +13,30 @@ use crate::stats::Histogram;
 
 /// The error counters.
 #[derive(Serialize)]
-struct Errors {
-    connect: u64,
-    read: u64,
-    write: u64,
-    timeout: u64,
-    status: u64,
+pub(crate) struct Errors {
+    pub(crate) connect: u64,
+    pub(crate) read: u64,
+    pub(crate) write: u64,
+    pub(crate) timeout: u64,
+    pub(crate) status: u64,
 }
 
 /// One statistics block.
 #[derive(Serialize)]
-struct Stats {
-    avg: f64,
-    stdev: f64,
-    min: u64,
-    max: u64,
+pub(crate) struct Stats {
+    pub(crate) avg: f64,
+    pub(crate) stdev: f64,
+    pub(crate) min: u64,
+    pub(crate) max: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    p50: Option<u64>,
+    pub(crate) p50: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    p75: Option<u64>,
+    pub(crate) p75: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    p90: Option<u64>,
+    pub(crate) p90: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    p99: Option<u64>,
-    within_1_stdev: f64,
+    pub(crate) p99: Option<u64>,
+    pub(crate) within_1_stdev: f64,
 }
 
 impl Stats {
@@ -62,17 +62,17 @@ impl Stats {
 
 /// The whole run as one object.
 #[derive(Serialize)]
-struct JsonReport<'a> {
-    duration_us: u64,
-    requests: u64,
-    bytes: u64,
-    requests_per_s: f64,
-    bytes_per_s: f64,
-    errors: Errors,
-    latency: Stats,
-    rate: Stats,
+pub(crate) struct JsonReport<'a> {
+    pub(crate) duration_us: u64,
+    pub(crate) requests: u64,
+    pub(crate) bytes: u64,
+    pub(crate) requests_per_s: f64,
+    pub(crate) bytes_per_s: f64,
+    pub(crate) errors: Errors,
+    pub(crate) latency: Stats,
+    pub(crate) rate: Stats,
     /// The wrkrs build that produced the report.
-    version: &'a str,
+    pub(crate) version: &'a str,
 }
 
 /// The JSON output mode.
@@ -81,28 +81,43 @@ pub struct JsonReporter;
 
 impl Reporter for JsonReporter {
     fn report(&self, out: &mut dyn io::Write, run: &RunReport) {
-        let runtime_s = run.duration_us as f64 / 1_000_000.0;
-        let report = JsonReport {
-            duration_us: run.duration_us,
-            requests: run.complete,
-            bytes: run.bytes,
-            requests_per_s: run.complete as f64 / runtime_s,
-            bytes_per_s: run.bytes as f64 / runtime_s,
-            errors: Errors {
-                connect: run.errors.connect,
-                read: run.errors.read,
-                write: run.errors.write,
-                timeout: run.errors.timeout,
-                status: run.errors.status,
-            },
-            // Latency in microseconds, the rate in requests per
-            // second, percentiles only for latency.
-            latency: Stats::of(&run.latency, true),
-            rate: Stats::of(&run.rate, false),
-            version: env!("CARGO_PKG_VERSION"),
-        };
+        let report = json_report(run);
         serde_json::to_writer_pretty(&mut *out, &report).expect("report writes");
         let _ = out.write_all(b"\n");
+    }
+}
+
+/// Builds the v1 report object for a run, shared by every mode that
+/// renders the JSON shape.
+pub(crate) fn json_report(run: &RunReport) -> JsonReport<'static> {
+    json_report_with_version(run, env!("CARGO_PKG_VERSION"))
+}
+
+/// Builds the report object carrying an explicit version, the seam
+/// other modes pin their fixtures through.
+pub(crate) fn json_report_with_version(
+    run: &RunReport,
+    version: &'static str,
+) -> JsonReport<'static> {
+    let runtime_s = run.duration_us as f64 / 1_000_000.0;
+    JsonReport {
+        duration_us: run.duration_us,
+        requests: run.complete,
+        bytes: run.bytes,
+        requests_per_s: run.complete as f64 / runtime_s,
+        bytes_per_s: run.bytes as f64 / runtime_s,
+        errors: Errors {
+            connect: run.errors.connect,
+            read: run.errors.read,
+            write: run.errors.write,
+            timeout: run.errors.timeout,
+            status: run.errors.status,
+        },
+        // Latency in microseconds, the rate in requests per
+        // second, percentiles only for latency.
+        latency: Stats::of(&run.latency, true),
+        rate: Stats::of(&run.rate, false),
+        version,
     }
 }
 

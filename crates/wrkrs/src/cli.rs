@@ -23,6 +23,8 @@ pub enum OutputMode {
     Modern,
     /// The machine readable v1 object.
     Json,
+    /// The self contained v1 page.
+    Html,
 }
 
 /// Parses an output mode name.
@@ -31,6 +33,7 @@ pub fn parse_output_mode(name: &str) -> Option<OutputMode> {
         "legacy" => Some(OutputMode::Legacy),
         "modern" => Some(OutputMode::Modern),
         "json" => Some(OutputMode::Json),
+        "html" => Some(OutputMode::Html),
         _ => None,
     }
 }
@@ -193,7 +196,7 @@ fn parse_result(program: &str, args: &[String], out: &mut dyn Write) -> Result<O
             'o' => {
                 output = parse_output_mode(value.unwrap_or_default()).ok_or_else(|| {
                     Outcome::Usage(Some(format!(
-                        "invalid output mode: {} (expected legacy, modern, or json)",
+                        "invalid output mode: {} (expected legacy, modern, json, or html)",
                         value.unwrap_or_default()
                     )))
                 })?;
@@ -299,7 +302,7 @@ pub fn print_usage(out: &mut dyn Write) {
         "    -H, --header      <H>  Add header to request",
         "        --latency          Print latency statistics",
         "        --timeout     <T>  Socket/request timeout",
-        "    -o, --output      <M>  legacy, modern, or json",
+        "    -o, --output      <M>  legacy, modern, json, html",
         "    -O, --output-file <F>  Write report to a file",
         "    -v, --version          Print version details",
         "",
@@ -484,6 +487,7 @@ mod tests {
         let cases = [
             (&["--output", "json", "http://host/"][..], OutputMode::Json),
             (&["-o", "modern", "http://host/"][..], OutputMode::Modern),
+            (&["-o", "html", "http://host/"][..], OutputMode::Html),
             // Attached values work. Every abbreviation of --output is
             // ambiguous with --output-file, so only the full name.
             (&["--output=modern", "http://host/"][..], OutputMode::Modern),
@@ -528,7 +532,7 @@ mod tests {
         assert_eq!(
             outcome,
             Outcome::Usage(Some(
-                "invalid output mode: xml (expected legacy, modern, or json)".to_owned()
+                "invalid output mode: xml (expected legacy, modern, json, or html)".to_owned()
             ))
         );
     }
