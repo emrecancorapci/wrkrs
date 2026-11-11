@@ -1,0 +1,12 @@
+# example benchmark file which demonstrates capturing an
+# authentication token from one path onto later requests,
+# the auth.lua flow without a script
+#
+# NOTE: each wrk thread captures its own token
+
+[request]
+path = "/authenticate"
+
+[capture]
+header = "X-Token"
+path   = "/resource"

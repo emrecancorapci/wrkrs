@@ -345,6 +345,25 @@ def main():
     if not ok:
         failures += 1
 
+    # The auth flow as a config file passes the same assertions as
+    # auth.lua: authenticate once, then carry the token onto every
+    # later request.
+    with seen_lock:
+        for key in seen:
+            seen[key].clear()
+    result, _ = run(WRKRS, port, "scripts/auth.toml")
+    ok = check("auth.toml: exit zero", result.returncode == 0, result.stderr[-200:])
+    ok &= check(
+        "auth.toml: completed requests",
+        wrkrs_requests(result) > 0,
+        result.stderr[-200:],
+    )
+    ok &= check("auth.toml: hit /authenticate", "/authenticate" in seen["paths"])
+    ok &= check("auth.toml: switched to /resource", "/resource" in seen["paths"])
+    ok &= check("auth.toml: token header echoed", "abc123" in seen["tokens"])
+    if not ok:
+        failures += 1
+
     # A broken benchmark file fails the run with the file named in
     # the error, data files do not fall back to defaults.
     broken = os.path.join(tempfile.gettempdir(), "wrkrs-e2e-broken.toml")
