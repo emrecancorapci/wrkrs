@@ -3,10 +3,11 @@
   wrkrs is a Rust port of wrk, a modern HTTP benchmarking tool capable
   of generating significant load when run on a single multi-core CPU.
   It combines a multithreaded design with scalable event notification
-  systems such as epoll and kqueue. The default output and command
-  line are byte compatible with wrk, so wrkrs works as a drop-in
-  replacement. The C reference implementation lived in the git
-  history until the 1.0 release.
+  systems such as epoll and kqueue. The command line is byte
+  compatible with wrk and `-o legacy` keeps the byte compatible
+  report, so wrkrs works as a drop-in replacement. The default
+  output since 2.0 is the modern layout. The C reference
+  implementation lived in the git history until the 1.0 release.
 
   An optional script or benchmark file shapes the load. Lua is the
   classic engine, JavaScript is built in, and TOML or JSON benchmark
@@ -58,10 +59,10 @@
         --timeout:     record a timeout if a response is not received within
                        this amount of time.
 
-    -o, --output:      report format: legacy (the byte compatible wrk
-                       layout, the default), modern (a clean layout with
-                       the percentile rows always present), json (one
-                       machine readable object, latency in
+    -o, --output:      report format: modern (a clean layout with the
+                       percentile rows always present, the default),
+                       legacy (the byte compatible wrk layout), json
+                       (one machine readable object, latency in
                        microseconds), or html (one self contained page,
                        the JSON object with the latency distribution
                        charted)

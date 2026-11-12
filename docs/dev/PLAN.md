@@ -93,9 +93,9 @@ machinery the engine already needed, so V2 narrows to templating.
 
 ## Phase V5 — modern becomes the default
 
-- [ ] flip the default output mode, `-o legacy` unchanged
-- [ ] README, AGENTS.md, and the usage text updates
-- [ ] the 2.0 version bump rides with this, the semver promise for
+- [x] flip the default output mode, `-o legacy` unchanged
+- [x] README, AGENTS.md, and the usage text updates
+- [x] the 2.0 version bump rides with this, the semver promise for
       the default flip
 
 > Note (order of work): V9 lands before this flip, it versions

@@ -199,8 +199,9 @@ one Lua runtime per binary). `engine-stub` exists for test-only builds.
 - The banner is legacy output: live on stdout before the run, and into the
   file when the report lands in one. Other modes print no banner. A file
   destination leaves stdout clean, one note goes to stderr.
-- Defaults: `legacy` is the default for 1.0 so wrkrs stays a drop-in
-  replacement, the default flips to `modern` at 2.0.
+- Defaults: `modern` since the 2.0 flip. `legacy` was the 1.x default and
+  stays behind `-o legacy`, the drop-in compatibility promise holds per
+  major.
 - The v1 `modern` mode is a static report. Live progress (countdown and
   rolling rate on the 100 ms tick when stdout is a TTY) is a follow-up.
 
@@ -208,8 +209,9 @@ one Lua runtime per binary). `engine-stub` exists for test-only builds.
 
 1. `--help`, `-v` output equivalent.
 2. The `legacy` output mode is byte-compatible with the README example
-   (spacing, units, `+/- Stdev`, percentile table under `--latency`), and
-   `legacy` is the default mode for 1.0 (see "Output modes").
+   (spacing, units, `+/- Stdev`, percentile table under `--latency`).
+   `legacy` was the default mode for 1.0; `modern` is the default since
+   the 2.0 flip (see "Output modes").
 3. All 9 scripts in `scripts/` run unmodified and behave identically
    (incl. `report.lua` histogram output, `pipeline.lua`, `stop.lua`,
    `delay.lua`, `setup.lua` cross-thread `get`/`set`).
