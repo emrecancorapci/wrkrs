@@ -69,6 +69,13 @@
     -O, --output-file: write the report to a file instead of stdout;
                        stdout stays clean and a note goes to stderr
 
+  The json object and the document embedded in html carry `schema`,
+  which versions the shape of the report, distinct from `version`,
+  the build that produced it. The policy is additive only: fields
+  are added, never renamed, retyped, or removed, consumers ignore
+  unknown fields, and only a non-additive change bumps the number.
+  Reports without `schema` are the implicit shape 1.
+
 ## Benchmarking Tips
 
   The machine running wrk must have a sufficient number of ephemeral ports

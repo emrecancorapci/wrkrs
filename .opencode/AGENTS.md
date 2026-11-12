@@ -182,12 +182,20 @@ one Lua runtime per binary). `engine-stub` exists for test-only builds.
   different numbers.
 - Modes for v1: `legacy` (byte-exact C output, the quirk list below is its
   spec), `modern` (clean human layout without the unit-ladder quirks), and
-  `json` (one machine-readable object). An `html` report is v2 and can
-  render from the JSON shape.
-- Flags: `--output <legacy|modern|json>` and `--output-file <path>`, short
-  forms `-o` and `-O`. Every abbreviation of `--output` is ambiguous with
-  `--output-file`, only the full name works, `--output-f` prefixes
+  `json` (one machine-readable object). 2.0 added `html`, one self
+  contained page rendered from the JSON shape.
+- Flags: `--output <legacy|modern|json|html>` and `--output-file <path>`,
+  short forms `-o` and `-O`. Every abbreviation of `--output` is ambiguous
+  with `--output-file`, only the full name works, `--output-f` prefixes
   `--output-file`.
+- The json report and the document embedded in html carry `schema`, 2 since
+  the field debuted, 1 implicit for the historical object, distinct from
+  `version` (the build). The policy is additive only: fields are added,
+  never renamed, retyped, or removed, consumers ignore unknown fields, and
+  only a non-additive change bumps the number. The contract is settled
+  ahead: V10 adds `mode`, `latency_uncorrected`, and `latency_send_time`,
+  V11 adds `diagnostics`, V12 adds a compare document carrying its own
+  `schema`.
 - The banner is legacy output: live on stdout before the run, and into the
   file when the report lands in one. Other modes print no banner. A file
   destination leaves stdout clean, one note goes to stderr.

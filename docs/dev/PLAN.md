@@ -178,22 +178,22 @@ too, but the only versionish field today is `version` in
 report, not the shape of the report, so a consumer cannot tell
 which fields a document is allowed to carry.
 
-- [ ] `json.rs`: a `schema` field on `JsonReport` behind a
+- [x] `json.rs`: a `schema` field on `JsonReport` behind a
       `SCHEMA` const, debuting at 2, the historical object
       implicitly 1, absent means 1 on the parse side
-- [ ] `html.rs`: the embedded document carries `schema`, the
+- [x] `html.rs`: the embedded document carries `schema`, the
       golden fixture updated
-- [ ] the additive-only policy written where contributors read
+- [x] the additive-only policy written where contributors read
       it, AGENTS.md and the `-o json` blurb in README: fields are
       added, never renamed, retyped, or removed, consumers ignore
       unknown fields, only a non-additive change bumps `schema`
-- [ ] name the fields the later phases add so the contract is
+- [x] name the fields the later phases add so the contract is
       settled before they land: V10 `mode`,
       `latency_uncorrected`, and `latency_send_time`, V11
       `diagnostics`, V12 a compare document with its own `schema`
-- [ ] PLAN-packaging.md: the report field list gains `schema`, the
+- [x] PLAN-packaging.md: the report field list gains `schema`, the
       distinction from `version` stated
-- [ ] acceptance: a golden test parses an old report fixture
+- [x] acceptance: a golden test parses an old report fixture
       ignoring unknown fields, and a fresh report carries
       `schema: 2` with every existing field unchanged
 

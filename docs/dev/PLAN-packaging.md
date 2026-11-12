@@ -86,10 +86,13 @@ const report = await run({
 Behaviors, fixed by tests:
 
 - always `-o json`; the report is the parsed stdout object
-  (`duration_us`, `requests`, `bytes`, `requests_per_s`, `bytes_per_s`,
-  `errors{connect,read,write,timeout,status}`, `latency` and `rate`
-  blocks with percentiles on latency, `version`), latency in
-  microseconds
+  (`schema`, `duration_us`, `requests`, `bytes`, `requests_per_s`,
+  `bytes_per_s`, `errors{connect,read,write,timeout,status}`, `latency`
+  and `rate` blocks with percentiles on latency, `version`), latency in
+  microseconds. `schema` versions the shape of the object under the
+  additive-only policy, `version` only names the build that produced
+  it, so the wrapper keys compatibility on `schema` and treats an
+  unknown field as forward-compatible data
 - `request`/`stop` serialize to the config engine JSON shape
   (`scripts/bench.json` is the schema) into a temp `.json` file,
   removed in `finally`
