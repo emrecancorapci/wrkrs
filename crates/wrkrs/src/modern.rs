@@ -1,4 +1,5 @@
-//! The modern reporter, the clean v1 layout.
+//! The modern reporter, the clean v1 layout, the default output
+//! mode since 2.0.
 //!
 //! The same measurements as the legacy report without the unit
 //! column quirks: fixed width columns, the percentile rows always

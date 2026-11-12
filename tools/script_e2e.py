@@ -402,11 +402,16 @@ def main():
     threading.Thread(target=kill_all, daemon=True).start()
 
     error_lines = []
-    for name, binary in (("wrkrs", WRKRS), ("C", WRK)):
+    # The comparison asserts the byte shape C prints, so wrkrs runs
+    # its legacy mode, the modern default carries a different line.
+    for name, binary, extra in (
+        ("wrkrs", WRKRS, ("-o", "legacy")),
+        ("C", WRK, ()),
+    ):
         if name == "C" and not os.path.exists(WRK):
             continue
         result = subprocess.run(
-            [binary, "-t1", "-c1", "-d1s", f"http://127.0.0.1:{dying_port}/"],
+            [binary, "-t1", "-c1", "-d1s", *extra, f"http://127.0.0.1:{dying_port}/"],
             capture_output=True,
             text=True,
             timeout=30,

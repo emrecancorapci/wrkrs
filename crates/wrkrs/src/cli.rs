@@ -16,10 +16,10 @@ use wrkrs_engine::UrlRef;
 /// The report format.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OutputMode {
-    /// The byte compatible wrk layout, the 1.0 default.
-    #[default]
+    /// The byte compatible wrk layout, the pre 2.0 default.
     Legacy,
-    /// The clean v1 layout.
+    /// The clean v1 layout, the default since 2.0.
+    #[default]
     Modern,
     /// The machine readable v1 object.
     Json,
@@ -57,7 +57,7 @@ pub struct Config {
     pub headers: Vec<String>,
     /// Engine name from `-e` when given.
     pub engine: Option<String>,
-    /// The report format, legacy by default.
+    /// The report format, modern by default.
     pub output: OutputMode,
     /// Where the report lands, stdout by default.
     pub output_file: Option<PathBuf>,
@@ -302,7 +302,7 @@ pub fn print_usage(out: &mut dyn Write) {
         "    -H, --header      <H>  Add header to request",
         "        --latency          Print latency statistics",
         "        --timeout     <T>  Socket/request timeout",
-        "    -o, --output      <M>  legacy, modern, json, html",
+        "    -o, --output      <M>  modern, legacy, json, html",
         "    -O, --output-file <F>  Write report to a file",
         "    -v, --version          Print version details",
         "",
@@ -473,18 +473,19 @@ mod tests {
     }
 
     #[test]
-    fn output_mode_defaults_to_legacy() {
+    fn output_mode_defaults_to_modern() {
         let (outcome, _) = run(&["http://host/"]);
         let Outcome::Run(config) = outcome else {
             panic!("expected a run");
         };
-        assert_eq!(config.output, OutputMode::Legacy);
+        assert_eq!(config.output, OutputMode::Modern);
         assert!(config.output_file.is_none());
     }
 
     #[test]
     fn parses_the_output_flags() {
         let cases = [
+            (&["-o", "legacy", "http://host/"][..], OutputMode::Legacy),
             (&["--output", "json", "http://host/"][..], OutputMode::Json),
             (&["-o", "modern", "http://host/"][..], OutputMode::Modern),
             (&["-o", "html", "http://host/"][..], OutputMode::Html),
