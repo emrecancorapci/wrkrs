@@ -60,9 +60,19 @@ impl Stats {
     }
 }
 
+/// The report schema version.
+///
+/// The historical object carried no `schema` field and is implicitly
+/// 1, the versioned line starts at 2. The policy is additive only:
+/// fields are added, never renamed, retyped, or removed, consumers
+/// ignore unknown fields, and only a non-additive change bumps this
+/// number.
+pub(crate) const SCHEMA: u32 = 2;
+
 /// The whole run as one object.
 #[derive(Serialize)]
 pub(crate) struct JsonReport<'a> {
+    pub(crate) schema: u32,
     pub(crate) duration_us: u64,
     pub(crate) requests: u64,
     pub(crate) bytes: u64,
@@ -71,7 +81,8 @@ pub(crate) struct JsonReport<'a> {
     pub(crate) errors: Errors,
     pub(crate) latency: Stats,
     pub(crate) rate: Stats,
-    /// The wrkrs build that produced the report.
+    /// The wrkrs build that produced the report, distinct from
+    /// `schema`, which versions the shape of the object.
     pub(crate) version: &'a str,
 }
 
@@ -101,6 +112,7 @@ pub(crate) fn json_report_with_version(
 ) -> JsonReport<'static> {
     let runtime_s = run.duration_us as f64 / 1_000_000.0;
     JsonReport {
+        schema: SCHEMA,
         duration_us: run.duration_us,
         requests: run.complete,
         bytes: run.bytes,
@@ -163,6 +175,7 @@ mod tests {
         let text = String::from_utf8(out).expect("utf8");
         assert!(text.ends_with("}\n"));
         let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+        assert_eq!(value["schema"], 2);
         assert_eq!(value["duration_us"], 2_000_000);
         assert_eq!(value["requests"], 1000);
         assert_eq!(value["errors"]["read"], 2);
@@ -172,5 +185,53 @@ mod tests {
         assert_eq!(value["latency"]["p99"], 171_000);
         // The rate block carries no percentiles.
         assert!(value["rate"].get("p50").is_none());
+    }
+
+    /// The schema policy: the fresh object carries `schema` 2 beside
+    /// every field the historical object already had, so the version
+    /// lands additive only.
+    #[test]
+    fn the_schema_debuts_without_moving_a_field() {
+        let mut out = Vec::new();
+        JsonReporter.report(&mut out, &report());
+        let value: serde_json::Value = serde_json::from_slice(&out).expect("valid json");
+        assert_eq!(value["schema"], super::SCHEMA);
+        let old = serde_json::from_str::<serde_json::Value>(include_str!(
+            "../../../tools/golden_report_v1.json"
+        ))
+        .expect("the v1 fixture parses");
+        for field in old.as_object().expect("an object").keys() {
+            if field == "future_field" {
+                // The planted unknown field is the tolerance probe
+                // of the other test, not a v1 field.
+                continue;
+            }
+            assert!(
+                value.get(field).is_some(),
+                "the v1 field '{field}' left the report"
+            );
+        }
+    }
+
+    /// A consumer reading a report from before the schema field, or
+    /// after a later schema added fields it does not know, keeps
+    /// parsing: the fixture is the historical shape and plants one
+    /// unknown field.
+    #[test]
+    fn old_reports_parse_and_unknown_fields_are_ignored() {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tools/golden_report_v1.json"))
+                .expect("the v1 fixture parses");
+        assert!(
+            value.get("schema").is_none(),
+            "the historical object carries no schema"
+        );
+        assert!(
+            value.get("future_field").is_some(),
+            "the fixture plants an unknown field"
+        );
+        assert_eq!(value["requests"], 1000);
+        assert_eq!(value["latency"]["p99"], 171_000);
+        assert_eq!(value["errors"]["status"], 7);
     }
 }

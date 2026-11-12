@@ -410,6 +410,7 @@ mod tests {
         let end = start + page[start..].find("</script>").expect("the blob closes");
         let blob = &page[start..end];
         let value: serde_json::Value = serde_json::from_str(blob).expect("valid json");
+        assert_eq!(value["schema"], 2);
         assert_eq!(value["duration_us"], 2_123_456);
         assert_eq!(value["requests"], 424_167);
         assert_eq!(value["errors"]["read"], 2);
